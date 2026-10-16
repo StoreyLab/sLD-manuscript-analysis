@@ -46,5 +46,8 @@ docs/
 # translation temp files
 po/*~
 
+# macOS folder display settings
+.DS_Store
+
 # RStudio Connect folder
 rsconnect/
