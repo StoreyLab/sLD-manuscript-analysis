@@ -1,0 +1,1862 @@
+---
+title: "Reproducible analysis for the sLD test manuscript"
+author: 
+  - name: Alvin J. Zhang
+  - name: John D. Storey
+format: 
+  html:
+    toc: true
+    toc-expand: 2
+bibliography: ./bibliography.bib
+---
+
+# Introduction
+
+This document contains code and supporting information accompanying the manuscript "Testing for linkage disequilibrium in structured populations." We organize the document by figure in order of appearance in the main text. 
+
+Some time-consuming chunks below are set not to run by default. Instead, we ran these code chunks on the ARGO SLURM cluster (managed by the Lewis-Sigler Institute for Integrative Genomics at Princeton University) and provide intermediate $\texttt{.rds}$ files in the $\texttt{rdata}$ directory to be loaded inside of plotting chunks. This directory contains sub-directories corresponding to each of the human studies we analyze in this study ($\texttt{TGP\_rdata}$, $\texttt{HGDP\_rdata}$, $\texttt{HO\_rdata}$), as well as a sub-directory for simulation studies ($\texttt{power\_sim}$). The $\texttt{figures}$ directory in turn contains the output figures. 
+
+# Libraries
+```{r, warning=FALSE, message=FALSE}
+library(ggplot2) # main plotting library
+library(ggh4x) # additional plotting utilities 
+library(dplyr) # for working with dataframes
+library(latex2exp) # LaTeX labels/headings in plots
+library(patchwork) # arrange subplots in figure
+library(bnpsd) # simulate structured genotypes
+library(alstructure) # estimate IAFs
+library(qvalue) # for statistical power simulations
+library(biomaRt) # BioMart database for SNP attributes
+source("./structLD/R/sLD_SNP.R")
+source("./structLD/R/compute_p_val.R")
+source("./structLD/R/compute_entropy.R")
+```
+
+# Datasets
+
+Our analyses center on three human studies: the Thousand Genomes Project (TGP) [@tgp2015], Human Genome Diversity Project (HGDP) [@cavalli-sforza2005], and Human Origins (HO) study [@lazaridis2014]. We process the datasets in the same manner as was done in [@hao2019]. In brief, we filter out closely related individuals and genotypes with an allele frequency below $0.05$ for each dataset, with some additional filtering on genotype completeness. Our resulting genotype matrices have the following dimensions:
+
+* TGP: $1815$ individuals and $1229310$ SNPs.
+* HGDP: $940$ individuals and $550303$ SNPs.
+* HO: $2251$ individuals and $372446$ SNPs.
+
+The [datasets](https://github.com/StoreyLab/alstructure_paper/tree/master/data) analyzed in this study can be found in the Storey Lab repository for the $\texttt{alstructure}$ manuscript [@cabreros2019].
+
+# Main Figures
+## Figure 1 {#sec-fig1}
+
+In this figure, we apply the sLD test to pairs of loci residing on different chromosomes using the TGP dataset. We show histograms corresponding to three different models of population structure: an unstructured model, a model partially accounting for structure, and a model capturing most of the structure in the population. 
+
+### Sample SNPs across distinct chromosomes 
+
+Our goal is to evaluate interchromosomal LD for different models of population structure. As such, we randomly draw a large number of locus pairs ($2 \times 10^6$) spanning different chromosomes. The following code chunks produce a file named $\texttt{TGP\_diff\_chr\_ids.rds}$, containing pairs of indices corresponding to SNPs on distinct chromosomes within the TGP dataset; these indices are consistent with the ordering of SNPs in the file $\texttt{TGP.bed}$. We keep this file in the directory $\texttt{./rdata/TGP\_rdata/diff\_chr}$. We use the BioMart database to obtain information about SNPs (i.e., chromosome number, base pair coordinate) [@smedley2009]. Note that we end with $1229022$ unique annotated SNPs after this step (out of the original $1229310$). 
+
+The directory $\texttt{./data/TGP}$ below is a placeholder for the user's path to the raw data files and should be replaced accordingly. Each human dataset is in PLINK format [@purcell2007] and consists of a set of three files (ending with the extensions $\texttt{.bed}$, $\texttt{.bim}$, and $\texttt{.fam}$). 
+
+```{r, message=FALSE, eval=FALSE}
+# Load TGP SNP IDs
+TGP <- BEDMatrix::BEDMatrix("./data/TGP/TGP", simple_names = TRUE)
+rsid_TGP <- colnames(TGP)
+```
+
+```{r, eval=FALSE}
+# Get SNP information from BioMart database 
+snp_mart <- biomaRt::useMart(
+  biomart = "ENSEMBL_MART_SNP", 
+  dataset = "hsapiens_snp", 
+  host = "https://e116.ensembl.org" 
+)
+
+results_tgp <- biomaRt::getBM(
+  attributes = c("refsnp_id", "chr_name", "chrom_start", "allele"),
+  filters = "snp_filter",
+  values = rsid_TGP,
+  mart = snp_mart
+)
+
+snp_info_TGP <- results_tgp[!duplicated(results_tgp$refsnp_id), ] # remove duplicates, if any
+saveRDS(snp_info_TGP, "./rdata/TGP_rdata/snp_info_TGP.rds")
+```
+
+We include a helper function below named $\texttt{sample\_across\_chromosomes()}$ that enables us to randomly sample pairs of loci spanning different chromosomes. We use this function here for the TGP, and call it later for the HGDP and HO datasets. We also add a simple function $\texttt{match\_rsid\_index()}$ that allows us to identify the index of a given SNP in the original PLINK genotype dataset.  
+
+```{r, eval=FALSE}
+# Function for sampling locus pairs spanning two different chromosomes 
+sample_across_chromosomes <- function(snp_info, n_pairs) {
+  snps_by_chr <- split(snp_info$refsnp_id, snp_info$chr_name)
+  chr_names <- as.character(1:22)
+  pair_rsid <- matrix(nrow = n_pairs, ncol = 2)
+  
+  for (i in 1:n_pairs) {
+    chr_pair <- sample(chr_names, 2, replace = FALSE)
+    snp_a <- sample(snps_by_chr[[chr_pair[1]]], 1)
+    snp_b <- sample(snps_by_chr[[chr_pair[2]]], 1)
+    pair_rsid[i,] <- c(snp_a, snp_b)
+  }
+  
+  return(pair_rsid)
+}
+
+match_rsid_index <- function(id_pairs, original_order) {
+  locus_a_id <- match(id_pairs[,1], original_order)
+  locus_b_id <- match(id_pairs[,2], original_order)
+  
+  return(cbind(locus_a_id, locus_b_id))
+}
+```
+
+```{r, eval=TRUE}
+# Check number of annotated SNPs
+snp_info_TGP <- readRDS("./rdata/TGP_rdata/snp_info_TGP.rds")
+dim(snp_info_TGP)
+```
+
+```{r, eval=FALSE}
+# Randomly draw interchromosomal locus pairs
+set.seed(23)
+pair_rsid <- sample_across_chromosomes(snp_info_TGP, 2e6)
+TGP_diff_chr <- match_rsid_index(pair_rsid, rsid_TGP)
+saveRDS(TGP_diff_chr, file = "./rdata/TGP_rdata/diff_chr/TGP_diff_chr_ids.rds")
+```
+
+### Perform sLD test on TGP data
+
+We present a sample implementation below for performing the sLD test on the TGP dataset. The sLD test requires estimated individual-specific allele frequencies (IAFs) -- as detailed in the main text, we employ a semiparametric estimator of the admixture model, called $\texttt{alstructure}$ [@cabreros2019]. We truncate estimates to be in the range $[\tfrac{1}{2J}, 1 - \tfrac{1}{2J}]$, where $J$ is the number of individuals, as is done for the related structural Hardy-Weinberg equilibrium (sHWE) test [@hao2019]; we do this to ensure that IAFs are not exactly equal to 0 or 1. In the example below, we model $K = 3$ admixed populations. 
+
+Because it can be time-intensive to carry out the sLD test for a large number of locus pairs and/or a large range of admixed population counts $K$, we recommend parallelizing this analysis. We performed this analysis using ARGO, a SLURM cluster under the Lewis-
+Sigler Institute for Integrative Genomics at Princeton University. ARGO consists of a combination of AMD EPYC and Intel Xeon compute nodes. We include a function for cluster jobs below named $\texttt{sLD\_parallel()}$, which is compatible with multi-core processors. The argument $\texttt{cores}$ specifies the number of cores. 
+
+```{r, eval=FALSE}
+sLD_parallel <- function(X, Pi, S, cores) {
+  mclapply(1:nrow(S), function(i) {
+    locus_a <- S[i, 1]
+    locus_b <- S[i, 2]
+    X_a <- X[locus_a, ]
+    X_b <- X[locus_b, ]
+    pi_a_vec <- Pi[locus_a, ]
+    pi_b_vec <- Pi[locus_b, ]
+    sLD_SNP(X_a, X_b, pi_a_vec, pi_b_vec)
+  }, mc.cores = cores) |> unlist()
+}
+
+# Example usage:
+# test_stat_vec <- sLD_parallel(X, Pi_hat, pair_indices, n_cores)
+```
+
+
+```{r, eval=FALSE}
+# Convert BEDmatrix to R matrix 
+X_TGP <- t(as.matrix(TGP)) # transpose to get loci x individuals format
+X_TGP <- alstructure:::impute_mean(X_TGP) # impute missing values in genotype matrix
+
+# Estimate IAFs
+K <- 3 # choose the number of admixed populations
+TGP_Pi_hat <- alstructure::estimate_F(X_TGP, d = K)$F_hat # estimated IAFs
+TGP_test_stats_K3 <- numeric(2e6)
+
+# Run sLD
+TGP_diff_chr_ids <- readRDS("./rdata/TGP_rdata/diff_chr/TGP_diff_chr_ids.rds") # load_pair_indices
+J_ind <- ncol(X_TGP) 
+TGP_Pi_hat[TGP_Pi_hat < 1/(2*J_ind)] <- 1/(2*J_ind) # truncate IAF estimates 
+TGP_Pi_hat[TGP_Pi_hat > 1 - 1/(2*J_ind)] <- 1 - 1/(2*J_ind)
+TGP_test_stats_K3 <- sLD(X_TGP, TGP_Pi_hat, TGP_diff_chr_ids)
+saveRDS(TGP_test_stats_K3, file = "./rdata/TGP_rdata/diff_chr/TGP_K3_diff_chr.rds")
+```
+
+We also demonstrate how to estimate IAFs under an unstructured model (equivalent to $K=1$ admixed populations). Here, we can simply compute a single allele frequency for each locus, without using $\texttt{alstructure}$. 
+
+```{r, eval=FALSE}
+# Estimate IAFs for an unstructured population model
+TGP_Pi_hat <- matrix(rowMeans(X_TGP/2), nrow=nrow(X_TGP), ncol=ncol(X_TGP))
+```
+
+### Code for plotting 
+
+We plot $p$-values for three different models of population structure. These are an unstructured model, partial structure model, and adequate structure model ($K=1$, $K=3$, and $K=19$ admixed populations, respectively). While we do not explicitly compute test statistics for $K=1$ and $K=19$ in this document, the code chunk above (which performs the sLD test with $K=3$ admixed populations) can be modified to use a different $K$. We also include a helper function below, named $\texttt{plot\_triple\_histograms()}$, that will be called throughout this document to create a plot consisting of three $p$-value histograms in a row. The intermediate files needed to plot this figure are contained in the directory $\texttt{rdata/TGP\_rdata}$. 
+
+```{r}
+# Function to generate subfigure
+plot_triple_histograms <- function(plot_df, labels) {
+  
+  p <- ggplot(plot_df, aes(x = p, y = after_stat(density))) + 
+       geom_histogram(binwidth = 0.05, boundary = 0,
+                      fill = "#CCD3DD", col = "black",
+                      linewidth = 0.2) + 
+       geom_hline(yintercept = 1, linetype = "dashed", color = "black", linewidth = 0.3) +
+       facet_wrap(~id, 
+                  labeller = as_labeller(labels, default = label_parsed), 
+                  scales = "free_y", 
+                  ncol = 3) + 
+       theme_bw(base_family = "sans") + 
+       theme(text = element_text(size = 10),
+             plot.title = element_text(hjust = 0.5, size = 12, face = "bold"),
+             strip.background = element_blank(),
+             strip.text = element_text(size = 8, face = "plain", 
+                                       margin = margin(t = 2, r = 0, b = 2, l = 0)),
+             panel.border = element_rect(color = "black", fill = NA, linewidth = 0.5),
+             panel.spacing = unit(0.5, "lines"),
+             panel.grid.minor = element_blank(),
+             axis.title.x = element_text(size = 8),
+             axis.title.y = element_text(size = 8),
+             axis.text.x = element_text(size = 6),
+             axis.text.y = element_blank(),
+             axis.ticks.y = element_blank(),
+             aspect.ratio = 0.7
+          ) + 
+       labs(x = TeX(r"(\textit{p}-value)"), 
+            y = "Density",
+           )
+  
+  return(p)
+}
+```
+
+```{r}
+# Read in test stats and compute p-values
+K_vec <- c(1,3,19)
+p_vec <- c()
+id_vec <- c()
+
+for (i in K_vec) {
+  obs_ts <- sprintf("./rdata/TGP_rdata/diff_chr/TGP_K%s_diff_chr.rds", i)
+  obs_ts <- readRDS(obs_ts)
+  p_K <- compute_p_val(obs_ts) # compute p-values from test stats
+  p_vec <- c(p_vec, p_K)
+  id_vec <- c(id_vec, rep(i, length(p_K)))
+}
+
+# Make dataframe for plotting
+sLD_df_TGP <- data.frame(id = id_vec, p = p_vec)
+sLD_df_TGP$id <- as.factor(sLD_df_TGP$id)
+labels <- c(
+  "1"  = "Unstructured~model~(italic(K)==1)",
+  "3"  = "Partial~structure~model~(italic(K)==3)",
+  "19" = "Adequate~structure~model~(italic(K)==19)"
+)
+
+p <- plot_triple_histograms(sLD_df_TGP, labels)
+
+p
+ggsave("./figures/figure1.png", plot = p, width = 6.5, height = 2, dpi = 600)
+```
+
+## Figure 2
+
+We created Figure 2 using the free online editor $\texttt{draw.io}$. 
+
+## Figure 3 {#sec-fig3}
+
+Here, we simulate genotypes under an admixture model with $K=4$ admixed populations for $J = 800$ individuals at $I = 80000$ loci, using the $\texttt{bnpsd}$ library [@ochoa2021]. We draw ancestral allele frequencies from the $\text{Uniform}(0.05,0.95)$ distribution, admixed population allele frequencies via the Balding-Nichols distribution [@balding1995], and admixture proportions according to a Normal random walk along a one-dimensional geography [@ochoa2016]. We chose admixed population inbreeding coefficients of $0.1, 0.2, 0.3$ and $0.4$. IAFs are in turn estimated from the observed genotypes using $\texttt{alstructure}$ under the assumption that the true number of admixed populations is known (i.e., setting $K=4$) [@cabreros2019]. We filter out loci with a minor allele frequency below 0.01. 
+
+### Simulate genotypes
+
+```{r, eval=FALSE}
+set.seed(42)
+J_ind <- 800 # number of individuals
+I_loci <- 80000 # number of loci
+K_subpops <- 4 # number of admixed pops
+
+# Draw admixture model parameters
+inbr_subpops <- c(0.1, 0.2, 0.3, 0.4) # admixed pop inbreeding coefficients
+admix_proportions <- bnpsd::admix_prop_1d_linear(J_ind, K_subpops, sigma = 1)
+
+# Draw IAFs 
+p_anc <- bnpsd::draw_p_anc(I_loci, p_min = 0.05, p_max = 0.95)
+p_subpops <- bnpsd::draw_p_subpops(p_anc, inbr_subpops)
+p_ind <- bnpsd::make_p_ind_admix(p_subpops, admix_proportions)
+p_ind[p_ind < 1/(2*J_ind)] <- 1/(2*J_ind) # truncate small/large IAFs
+p_ind[p_ind > 1 - 1/(2*J_ind)] <- 1 - 1/(2*J_ind)
+
+# Draw genotypes, estimate IAFs
+X <- bnpsd::draw_genotypes_admix(p_ind)
+p_ind_marginal <- matrix(rowMeans(p_ind), 
+                         nrow=nrow(p_ind), ncol=ncol(p_ind))
+p_ind_hat <- alstructure::estimate_F(X, d = 4)$F_hat # assume K known 
+p_ind_hat[p_ind_hat < 1/(2*J_ind)] <- 1/(2*J_ind) # truncate estimates
+p_ind_hat[p_ind_hat > 1 - 1/(2*J_ind)] <- 1 - 1/(2*J_ind)
+
+# Filter out small MAFs (< 0.01)
+min_MAF <- 0.01
+maf_vec <- rowMeans(X, na.rm = TRUE) / 2
+actual_maf <- pmin(maf_vec, 1 - maf_vec)
+keep_rows <- which(actual_maf >= min_MAF)
+X_filtered <- X[keep_rows, , drop = FALSE]
+p_ind_filtered <- p_ind[keep_rows, , drop = FALSE]
+p_ind_hat_filtered <- p_ind_hat[keep_rows, , drop = FALSE]
+p_ind_marginal_filtered <- p_ind_marginal[keep_rows, , drop = FALSE]
+```
+
+### Perform sLD test on null pairs
+
+We perform the sLD test on $50000$ randomly selected pairs of SNPs. We consider an unstructured population model (equivalent to $K=1$ admixed populations), the true population model, and an estimated population model. The corresponding test types will be referred to as traditional, sLD (theoretical), and sLD (implemented), respectively. Because we draw genotypes jointly independent of one another, these pairs represent true null hypotheses (no structural LD). Note that we can equivalently use the function $\texttt{sLD()}$ to compute test statistics. In this case, we would first compute a full set of locus pair indices, and input this set directly into $\texttt{sLD()}$. We explicitly loop over $\texttt{1:n\_pairs}$ here and use $\texttt{sLD\_SNP()}$ to demonstrate how individual test statistics are computed.
+
+```{r, eval=FALSE}
+set.seed(41)
+n_pairs <- 50000 # number of hypothesis tests
+theor_vec <- numeric(n_pairs) # sLD test stat with true IAFs
+imp_vec <- numeric(n_pairs) # sLD test stat with estimated IAFs
+trad_vec <- numeric(n_pairs) # test assuming no structure 
+
+for (i in 1:n_pairs) {
+  loci_id <- sample(1:nrow(X_filtered), 2) # sample a pair of loci
+  a_id <- loci_id[1]
+  b_id <- loci_id[2]
+  
+  # Compute test statistics
+  theor_vec[i] <- sLD_SNP(X_filtered[a_id,], X_filtered[b_id,],
+                          p_ind_filtered[a_id,], p_ind_filtered[b_id,])
+  imp_vec[i] <- sLD_SNP(X_filtered[a_id,], X_filtered[b_id,],
+                        p_ind_hat_filtered[a_id,], p_ind_hat_filtered[b_id,])
+  trad_vec[i] <- sLD_SNP(X_filtered[a_id,], X_filtered[b_id,],
+                         p_ind_marginal_filtered[a_id,],
+                         p_ind_marginal_filtered[b_id,])
+}
+
+# Compute p-values from test stats
+p_values_trad <- compute_p_val(trad_vec)
+p_values_theor <- compute_p_val(theor_vec)
+p_values_imp <- compute_p_val(imp_vec)
+
+# Save output as .rds
+saveRDS(
+  list(trad = p_values_trad,
+       theor  = p_values_theor,
+       imp  = p_values_imp
+      ),
+  file = "./rdata/p_values_sim.rds",
+)
+```
+
+### Code for plotting
+
+The intermediate file needed to plot this figure is contained in the directory $\texttt{rdata}$. 
+
+```{r, eval=TRUE}
+# Load saved p-values 
+p_values_sim <- readRDS("./rdata/p_values_sim.rds")
+p_values_trad <- p_values_sim$trad
+p_values_theor <- p_values_sim$theor
+p_values_imp <- p_values_sim$imp
+
+# Plot style/theme 
+single_hist_style <- list(
+  geom_histogram(binwidth = 0.05, boundary = 0, 
+                 fill = "#CCD3DD", col = "black", linewidth = 0.2),
+  geom_hline(yintercept = 1, linetype = "dashed", 
+             color = "black", alpha = 0.5, linewidth = 0.4),
+  theme_bw(base_family = "sans"),
+  theme(plot.title = element_text(hjust = 0.5, size = 10, face = "plain"),
+        strip.background = element_blank(),
+        strip.text = element_text(size = 8, face = "plain"),
+        panel.border = element_rect(color = "black", fill = NA, 
+                                    linewidth = 0.5),
+        panel.grid.minor = element_blank(),
+        axis.title = element_text(size=8),
+        axis.text.x = element_text(size = 6),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        aspect.ratio = 0.7),
+  labs(x = TeX(r"(\textit{p}-value)"), y = "Density")
+)
+
+# Create subplot A (traditional test)
+pA <- ggplot(data.frame(p = p_values_trad), 
+             aes(x = p, y = after_stat(density))) + 
+  single_hist_style + 
+  labs(title = "Traditional")
+
+# Create subplot B (sLD theoretical)
+pB <- ggplot(data.frame(p = p_values_theor), 
+             aes(x = p, y = after_stat(density))) + 
+  single_hist_style + 
+  labs(title = "sLD")
+
+# Create subplot C (QQ plot)
+n <- length(p_values_trad)
+theoretical <- -log10(ppoints(n))
+
+qq_df <- data.frame(
+  expected = rep(theoretical, 3),
+  observed = c(sort(-log10(p_values_trad), decreasing = TRUE), 
+               sort(-log10(p_values_theor), decreasing = TRUE), 
+               sort(-log10(p_values_imp), decreasing = TRUE)),
+  method = rep(c("Traditional", "sLD (theoretical)", "sLD (implemented)"), each = n)
+)
+
+pC <- ggplot(qq_df, aes(x = expected, y = observed, 
+                        color = method, shape = method)) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", 
+              color = "darkgray") +
+  geom_point(data = subset(qq_df, method == "Traditional"), 
+             size = 0.5, alpha = 0.4) +
+  geom_point(data = subset(qq_df, method == "sLD (theoretical)"), 
+             size = 0.5, alpha = 0.4) +
+  geom_point(data = subset(qq_df, method == "sLD (implemented)"), 
+             size = 0.5, alpha = 0.4) +
+  scale_color_manual(breaks = c("Traditional", 
+                                "sLD (theoretical)", 
+                                "sLD (implemented)"),
+                     values = c("Traditional" = "#E69F00", 
+                                "sLD (theoretical)" = "#56B4E9", 
+                                "sLD (implemented)" = "#009E73")) +
+  scale_shape_manual(breaks = c("Traditional", 
+                                "sLD (theoretical)", 
+                                "sLD (implemented)"),
+                     values = c("Traditional" = 16, 
+                                "sLD (theoretical)" = 17, 
+                                "sLD (implemented)" = 15)) +
+  coord_cartesian(xlim = c(0, max(qq_df$expected)), ylim = c(0, 10)) + 
+  labs(x = TeX(r"(Theoretical -log$_{10}$(Uniform(0,1) quantiles))"),
+       y = TeX(r"(Observed -log$_{10}$(\textit{p}-values))"),
+       color = "Method", shape = "Method") + 
+  theme_bw(base_family = "sans") + 
+  theme(plot.title = element_text(hjust = 0.5, size = 9),
+        strip.background = element_blank(),
+        panel.border = element_rect(color = "black", fill = NA, 
+                                    linewidth = 0.5),
+        panel.grid.minor = element_blank(),
+        axis.text = element_text(size = 7),
+        axis.title = element_text(size = 8),
+        legend.position = "bottom",
+        legend.title = element_text(size = 8), 
+        legend.text = element_text(size = 8),
+        plot.margin = margin(t = 5, r = 5, b = 5, l = 5)) +
+  guides(color = guide_legend(override.aes = list(size = 2, alpha = 1)),
+         shape = guide_legend())
+
+# Assemble layout
+layout <- "
+  ##AABB##
+  ###CC###
+"
+
+p <- (pA | pB) / (plot_spacer() + pC + 
+                    plot_spacer() + 
+                     plot_layout(widths = c(1, 2, 1))) + 
+  plot_annotation(tag_levels = "A") & 
+  theme(plot.tag = element_text(face = "bold", size = 14))
+
+p
+ggsave(filename="./figures/figure3.png", p, width = 7, height = 6, dpi = 1200)
+```
+
+## Figure 4
+
+We evaluate the statistical power of the sLD test, assessing whether it has the ability to detect true instances of structural LD. As such, we implement the forward-generating probability model for genotype pairs in structural LD outlined in the main text. We first generate IAFs for $J = 800$ individuals at $I = 200000$ loci under an admixture model with $K=4$ admixed populations. Our simulation parameters and distributions closely mirror those used for [Figure 3](#sec-fig3), only we have a larger number of loci here. 
+
+From these IAFs, we then draw genotypes -- some in structural LD, and others not in structural LD. Genotype pairs *not* in structural LD are essentially jointly independent binomial draws in accordance with the coancestry model. For genotype pairs in structural LD, we must tune the value of their individual-specific LD coefficient $\delta_{ab,j}$. Note that the possible values of $\delta_{ab,j}$ are constrained, as detailed in the manuscript, by $D_{\min}(\pi_{aj}, \pi_{bj})$ and $D_{\max}(\pi_{aj}, \pi_{bj})$ -- the minimum and maximum possible values of the LD coefficient given two allele frequencies $\pi_{aj}$ and $\pi_{bj}$. These constraints ensure that haplotype frequencies under our framework are non-negative values summing up to one. Thus, given $\pi_{aj}$ and $\pi_{bj}$, and assuming positive LD, we first compute $D_{\max}(\pi_{aj}, \pi_{bj})$ and then set $\delta_{ab,j} = D' \times D_{\max}(\pi_{aj}, \pi_{bj})$, where $D' \in [0,1]$ is some chosen proportion of the maximum possible (positive) LD. In our simulations, we chose a range of $D'$ from $0.2$ to $1$ in increments of $0.1$. We conduct 300 simulation replicates for each value of $D'$. 
+
+### Draw IAFs
+
+```{r, eval=FALSE}
+set.seed(999)
+J_ind <- 800
+I_loci <- 200000
+K_subpops <- 4
+
+# Draw admixture model parameters
+inbr_subpops <- c(0.1, 0.2, 0.3, 0.4)
+admix_proportions <- bnpsd::admix_prop_1d_linear(J_ind, K_subpops, sigma = 1)
+
+# Draw IAFs
+p_anc <- bnpsd::draw_p_anc(I_loci, p_min = 0.05, p_max = 0.5)
+p_subpops <- bnpsd::draw_p_subpops(p_anc, inbr_subpops)
+p_ind <- bnpsd::make_p_ind_admix(p_subpops, admix_proportions)
+p_ind[p_ind < 1/(2*J_ind)] <- 1/(2*J_ind) # truncate small/large IAFs
+p_ind[p_ind > 1 - 1/(2*J_ind)] <- 1 - 1/(2*J_ind)
+
+min_MAF <- 0.05 # Minimum MAF filter if desired
+# p_ind <- p_ind[rowMeans(p_ind) >= min_MAF & 
+# rowMeans(p_ind) <= (1 - min_MAF), ]
+m_kept <- nrow(p_ind)
+```
+
+### Perform sLD test on simulated null and non-null pairs
+
+We provide a function $\texttt{sim\_mat\_with\_haplo()}$ that generates a genotype matrix in which certain pairs of genotypes (for a given individual) are in structural LD. The helper function $\texttt{run\_single\_simulation()}$ in turn runs one instance of our statistical power simulations, while $\texttt{compute\_FDR\_power()}$ calculates the false discovery rate (FDR) and statistical power given a set of $p$-values, the indices corresponding to the true alternate hypotheses among these $p$-values, and a threshold for $q$-values. 
+
+```{r, eval=FALSE}
+compute_FDR_power <- function(p_val_vec, alt_ids, q_threshold) {
+  
+  q_val_vec <- qvalue(p_val_vec, pi0 = 1)
+  rejected <- which(q_val_vec$qvalues <= q_threshold)
+  FDR <- if (length(rejected) > 0) 
+    length(setdiff(rejected, alt_ids)) / length(rejected) 
+  else 0
+  power <- length(intersect(rejected, alt_ids)) / length(alt_ids)
+  
+  return(c(FDR, power))
+}
+
+# m_kept can be adjusted if any filtering is done on minimum MAF
+run_single_simulation <- function(s, p_ind, rho, q_threshold = 0.1, 
+                                  m_kept = nrow(p_ind)) {
+  
+  # Generate genotypes
+  pair_ids <- matrix(1:5000, ncol = 2, byrow = TRUE) # indices of non-null SNP pairs
+  n_null_pairs <- 5e4 # number of null hypotheses
+  alt_ids <- 1:2500 # indices of non-null p-values
+  
+  X <- sim_mat_with_haplo(p_ind, pair_ids, rho = rho)
+  
+  full_pairlist <- rbind(
+    pair_ids,
+    t(replicate(n_null_pairs, sample(5001:m_kept, 2)))
+  )
+  n_pairs <- nrow(full_pairlist)
+
+  # Estimate and truncate IAFs
+  p_hat <- estimate_F(X, d = 4)$F_hat
+  J_ind <- ncol(p_hat)
+  p_hat[p_hat < 1/(2*J_ind)] <- 1/(2*J_ind)
+  p_hat[p_hat > 1 - 1/(2*J_ind)] <- 1 - 1/(2*J_ind)
+  
+  p_trad <- matrix(
+    rowMeans(X/2, na.rm = TRUE),
+    nrow = nrow(X), 
+    ncol = ncol(X)
+  )
+  p_trad[p_trad < 1/(2*J_ind)] <- 1/(2*J_ind)
+  p_trad[p_trad > 1 - 1/(2*J_ind)] <- 1 - 1/(2*J_ind)
+
+  test_stat_theor_vec <- numeric(n_pairs)
+  test_stat_imp_vec <- numeric(n_pairs)
+  test_stat_trad_vec <- numeric(n_pairs)
+
+  for (i in 1:n_pairs) {
+    locus_a <- full_pairlist[i, 1]
+    locus_b <- full_pairlist[i, 2]
+    X_a <- X[locus_a, ]
+    X_b <- X[locus_b, ]
+    
+    test_stat_theor_vec[i] <- sLD_SNP(X_a, X_b, p_ind[locus_a, ], p_ind[locus_b, ])
+    test_stat_imp_vec[i] <- sLD_SNP(X_a, X_b, p_hat[locus_a, ], p_hat[locus_b, ])
+    test_stat_trad_vec[i] <- sLD_SNP(X_a, X_b, p_trad[locus_a, ], p_trad[locus_b, ])
+  }
+  
+  # Compute p-values 
+  p_val_theor_vec <- compute_p_val(test_stat_theor_vec)
+  p_val_imp_vec <- compute_p_val(test_stat_imp_vec)
+  p_val_trad_vec <- compute_p_val(test_stat_trad_vec)
+  
+  # Compute FDR and power metrics
+  out_theor <- compute_FDR_power(p_val_theor_vec, alt_ids, q_threshold = q_threshold)
+  out_imp <- compute_FDR_power(p_val_imp_vec, alt_ids, q_threshold = q_threshold)
+  out_trad <- compute_FDR_power(p_val_trad_vec, alt_ids, q_threshold = q_threshold)
+  
+  return(list(theor = out_theor, imp = out_imp, naive = out_trad))
+}
+```
+
+We include a representative example of running a set of simulation replicates for a given value of $D'$ (0.5 in this case). We ran these simulations on the ARGO cluster to speed up compute time; the directory $\texttt{./rdata/power\_sim}$ contains the output of these simulations. 
+
+```{r, eval=FALSE}
+set.seed(42)
+n_simulation <- 300
+rho <- 0.5
+
+FDR_theor_vec <- numeric(n_simulation)
+power_theor_vec <- numeric(n_simulation)
+FDR_imp_vec <- numeric(n_simulation)
+power_imp_vec <- numeric(n_simulation)
+FDR_trad_vec <- numeric(n_simulation)
+power_trad_vec <- numeric(n_simulation)
+
+# Using p_ind we draw previously 
+for (s in 1:n_simulation) {
+    sim_res <- run_single_simulation(s, p_ind = p_ind, rho = rho)
+    
+    FDR_theor_vec[s] <- sim_res$theor[1]
+    power_theor_vec[s] <- sim_res$theor[2]
+    
+    FDR_imp_vec[s] <- sim_res$imp[1]
+    power_imp_vec[s] <- sim_res$imp[2]
+    
+    FDR_trad_vec[s] <- sim_res$naive[1]
+    power_trad_vec[s] <- sim_res$naive[2]
+}
+
+saveRDS(FDR_theor_vec, file = "./rdata/power_sim/fdr_theor_0.5.rds")
+saveRDS(power_theor_vec, file = "./rdata/power_sim/power_theor_0.5.rds")
+saveRDS(FDR_imp_vec, file = "./rdata/power_sim/fdr_imp_0.5.rds")
+saveRDS(power_imp_vec, file = "./rdata/power_sim/power_imp_0.5.rds")
+saveRDS(FDR_trad_vec, file = "./rdata/power_sim/fdr_trad_0.5.rds")
+saveRDS(power_trad_vec, file = "./rdata/power_sim/power_trad_0.5.rds")
+```
+
+### Code for plotting
+
+```{r, eval=TRUE}
+rho_vec <- seq(0.1, 0.5, by=0.05)
+n_entry <- length(rho_vec)
+power_vec_theor <- numeric(n_entry)
+FDR_vec_theor <- numeric(n_entry)
+power_vec_trad <- numeric(n_entry)
+FDR_vec_trad <- numeric(n_entry)
+power_vec_imp <- numeric(n_entry)
+FDR_vec_imp <- numeric(n_entry)
+counter <- 1
+
+# Load in rdata files for plotting 
+for (i in rho_vec) {
+  fdr_theor <- sprintf("./rdata/power_sim/fdr_theor_%.2f.rds", i)
+  fdr_theor <- readRDS(fdr_theor)
+  power_theor <- sprintf("./rdata/power_sim/power_theor_%.2f.rds", i)
+  power_theor <- readRDS(power_theor)
+  
+  fdr_imp <- sprintf("./rdata/power_sim/fdr_imp_%.2f.rds", i)
+  fdr_imp <- readRDS(fdr_imp)
+  power_imp <- sprintf("./rdata/power_sim/power_imp_%.2f.rds", i)
+  power_imp <- readRDS(power_imp)
+  
+  fdr_trad <- sprintf("./rdata/power_sim/fdr_trad_%.2f.rds", i)
+  fdr_trad <- readRDS(fdr_trad)
+  power_trad <- sprintf("./rdata/power_sim/power_trad_%.2f.rds", i)
+  power_trad <- readRDS(power_trad)
+  
+  power_vec_theor[counter] <- mean(power_theor)
+  FDR_vec_theor[counter] <- mean(fdr_theor)
+  power_vec_imp[counter] <- mean(power_imp)
+  FDR_vec_imp[counter] <- mean(fdr_imp)
+  power_vec_trad[counter] <- mean(power_trad)
+  FDR_vec_trad[counter] <- mean(fdr_trad)
+  counter <- counter + 1
+}
+```
+
+```{r, eval=TRUE}
+power_analysis_df <- data.frame(index=rep(seq(0.1,0.5,by=0.05), 6),
+                                value=c(FDR_vec_theor, FDR_vec_imp, FDR_vec_trad, 
+                                       power_vec_theor, power_vec_imp, power_vec_trad),
+                                metric = rep(c("FDR", "FDR", "FDR", 
+                                               "Power", "Power", "Power"), each = 9),
+                                method = rep(c("sLD (theoretical)", 
+                                               "sLD (implemented)", 
+                                               "Traditional"), times = 2, each = 9)
+                               )
+fdr_line <- data.frame(metric = "FDR", yintercept = 0.1)
+
+power_analysis_df$method <- factor(
+  power_analysis_df$method, 
+  levels = c("Traditional", "sLD (theoretical)", "sLD (implemented)")
+)
+
+p <- ggplot(power_analysis_df, aes(x = index, y = value, color = method, shape = method)) +
+  geom_line(data = subset(power_analysis_df, method == "sLD (theoretical)"), 
+            aes(group = method), linewidth = 1.4, alpha = 0.4, linetype = "solid") +
+  geom_line(data = subset(power_analysis_df, method != "sLD (theoretical)"), 
+            aes(group = method), linewidth = 0.6) +
+  geom_point(size = 2.0) +
+  facet_wrap(~metric, scales = "free_y") +
+  labs(x = TeX(r"($\rho$)"), y = NULL, color = "Method", shape = "Method") +
+  geom_hline(data = fdr_line, aes(yintercept = yintercept), 
+             linetype = "dashed", color = "black", linewidth = 0.4) +
+  scale_color_manual(breaks = c("Traditional", 
+                                "sLD (theoretical)", 
+                                "sLD (implemented)"),
+                     values = c("sLD (theoretical)" = "#56B4E9", 
+                                "sLD (implemented)" = "#009E73", 
+                                "Traditional" = "#E69F00")
+                     ) + 
+  scale_shape_manual(breaks = c("Traditional", 
+                                "sLD (theoretical)", 
+                                "sLD (implemented)"),
+                     values = c("sLD (theoretical)" = 17,  
+                                "sLD (implemented)" = 15,
+                                "Traditional" = 16)
+                     ) +
+  theme_bw(base_family = "sans") + 
+  theme(strip.background = element_blank(),
+        strip.text = element_text(face = "plain", size = 8),
+        panel.border = element_rect(color = "black", fill = NA, linewidth = 0.5),
+        panel.grid.minor = element_blank(),
+        axis.text = element_text(size = 6),
+        axis.title.x = element_text(size = 8),
+        text = element_text(size = 12),
+        aspect.ratio = 0.8,
+        legend.position = "bottom",
+        legend.title = element_text(size = 8),
+        legend.text = element_text(size = 7)
+  ) +
+  guides(color = guide_legend(override.aes = list(linewidth = c(0.6, 1.2, 0.6), 
+                                                  alpha = c(1, 0.4, 1)
+                                                  )
+                              )
+         ) +
+  facetted_pos_scales(y = list(metric == "FDR" ~ scale_y_continuous(limits = c(0, 1),
+                                                                    breaks = seq(0, 1,
+                                                                                 by = 0.2)), 
+                               metric == "Power" ~ scale_y_continuous(limits = c(0, 1),
+                                                                      breaks = seq(0, 1,
+                                                                                   by = 0.2))
+    )
+  )
+
+p
+ggsave("./figures/figure4.png", plot = p, width = 5, height = 3, dpi = 1200)
+```
+
+## Figure 5
+
+Our workflow for this figure closely mirrors that of @sec-fig1, in that we randomly draw interchromosomal locus pairs and perform the sLD test for these pairs. This process is already documented for the TGP in @sec-fig1 so we will only show the steps for the HGDP and the HO study below. However, we will demonstrate, using the TGP, an approach for a researcher to choose the number of admixed populations $K$ in an estimated model of population structure.
+
+### Procedure for selecting $K$ 
+
+We briefly describe our procedure for choosing the number of admixed populations $K$ in an admixture model of population structure, which closely follows an algorithm introduced for the related sHWE test [@hao2019]. We analyze the TGP in this example. Specifically, for each value of $K$, we compute the (Shannon) entropy of its corresponding $p$-value distribution (these are $p$-values computed for interchromosomal locus pairs). This process begins with partitioning the interval $[0,1]$ into $B$ equally sized bins. We then compute the entropy, defined as $-\sum_{b=1}^B f_b \log_2(f_b)$, where $f_b$ is the proportion of $p$-values falling into the $b$th bin. We can choose the value of $K$ corresponding to the largest entropy value, at the start of a plateau in entropy values, or via some other metric. In our analyses, we select the smallest value of $K$ within an entropy plateau such that its corresponding histogram of $p$-values is qualitatively close to the $\text{Uniform}(0,1)$ distribution. 
+
+```{r, eval=TRUE}
+entropy_vec <- numeric()
+id_vec <- c(1:24)
+
+for (i in id_vec) {
+  obs_ts <- sprintf("./rdata/TGP_rdata/diff_chr/TGP_K%s_diff_chr.rds", i)
+  obs_ts <- readRDS(obs_ts)
+  p_k <- compute_p_val(obs_ts)
+  entropy_vec <- c(entropy_vec, compute_entropy(p_k, n_bin = 20))
+}
+
+plot(id_vec, entropy_vec, main = "TGP: Entropy vs. K", type = "l",
+     xlab = "K", ylab = "Entropy")
+```
+
+### Processing and running sLD on the HGDP
+
+Like before, we obtain SNP information from BioMart and identify pairs of loci on different chromosomes. We end up with $549730$ unique annotated SNPs (out of $550303$). We also include sample code for running the sLD test with an estimated model of population structure employing $K=16$ admixed populations; the analyses can be rerun for different population models by replacing $K$ with a different value. To run the analysis with $K=1$, please refer to the documentation for @sec-fig1, which demonstrates how to estimate IAFs in this instance. 
+
+```{r, message=FALSE, eval=FALSE}
+# Load HGDP SNP IDs
+HGDP <- BEDMatrix::BEDMatrix("./data/HGDP/HGDP", simple_names = TRUE)
+rsid_HGDP <- colnames(HGDP)
+```
+
+```{r, eval=FALSE}
+# Get SNP attributes
+results <- getBM(
+  attributes = c("refsnp_id", "chr_name", "chrom_start", "allele"),
+  filters = "snp_filter",
+  values = rsid_HGDP,
+  mart = snp_mart
+)
+
+snp_info_HGDP <- results[!duplicated(results$refsnp_id), ] # remove duplicates
+saveRDS(snp_info_HGDP, "./rdata/HGDP_rdata/snp_info_HGDP.rds")
+```
+
+```{r, eval=TRUE}
+# Check number of annotated SNPs
+snp_info_HGDP <- readRDS("./rdata/HGDP_rdata/snp_info_HGDP.rds")
+dim(snp_info_HGDP)
+```
+
+```{r, eval=FALSE}
+# Sample SNPs across different chromosomes
+set.seed(23)
+pair_rsid <- sample_across_chromosomes(snp_info_HGDP, 2e6)
+HGDP_diff_chr <- match_rsid_index(pair_rsid, rsid_HGDP)
+saveRDS(HGDP_diff_chr, file = "./rdata/HGDP_rdata/diff_chr/HGDP_diff_chr_ids.rds")
+```
+
+```{r, eval=FALSE}
+# Convert BEDmatrix to R matrix
+snp_info_HGDP <- readRDS("./rdata/HGDP_rdata/snp_info_HGDP.rds")
+X_HGDP <- t(as.matrix(HGDP)) # transpose to get loci x individuals format
+X_HGDP <- alstructure:::impute_mean(X_HGDP) # impute missing values in genotype matrix
+
+# Estimate IAFs
+K <- 16 # choose the number of admixed populations
+HGDP_Pi_hat <- alstructure::estimate_F(X_HGDP, d = K)$F_hat # estimated IAFs
+
+# Run sLD
+HGDP_diff_chr_ids <- readRDS("./rdata/HGDP_rdata/diff_chr/HGDP_diff_chr_ids.rds") # load pair indices
+J_ind <- ncol(X_HGDP) 
+HGDP_Pi_hat[HGDP_Pi_hat < 1/(2*J_ind)] <- 1/(2*J_ind) # truncate IAF estimates 
+HGDP_Pi_hat[HGDP_Pi_hat > 1 - 1/(2*J_ind)] <- 1 - 1/(2*J_ind)
+HGDP_test_stats_K16 <- sLD(X_HGDP, HGDP_Pi_hat, HGDP_diff_chr_ids)
+saveRDS(HGDP_test_stats_K16, file = "./rdata/HGDP_rdata/diff_chr/HGDP_K16_diff_chr.rds")
+```
+
+### Processing and running sLD on the HO study
+
+We will carry out the same process for the HO dataset. We end up with $372398$ annotated SNPs (out of $372446$). The sample code below considers the case where we estimate population structure under $K=25$ admixed populations. 
+
+```{r, message=FALSE, eval=FALSE}
+# Load HO SNP IDs
+HO <- BEDMatrix::BEDMatrix("./data/HO/HO", simple_names = TRUE)
+rsid_HO <- colnames(HO)
+```
+
+```{r, eval=FALSE}
+# Get SNP attributes
+results_ho <- getBM(
+  attributes = c("refsnp_id", "chr_name", "chrom_start", "allele"),
+  filters = "snp_filter",
+  values = rsid_HO,
+  mart = snp_mart
+)
+
+snp_info_HO <- results_ho[!duplicated(results_ho$refsnp_id), ] # remove duplicates
+saveRDS(snp_info_HO, "./rdata/HO_rdata/snp_info_HO.rds")
+```
+
+```{r, eval=TRUE}
+# Check number of annotated SNPs
+snp_info_HO <- readRDS("./rdata/HO_rdata/snp_info_HO.rds")
+dim(snp_info_HO)
+```
+
+```{r, eval=FALSE}
+# Sample loci pairs across chromosomes 
+set.seed(23)
+pair_rsid <- sample_across_chromosomes(snp_info_HO, 2e6)
+HO_diff_chr <- match_rsid_index(pair_rsid, rsid_HO)
+saveRDS(HO_diff_chr, file = "./rdata/HO_rdata/diff_chr/HO_diff_chr_ids.rds")
+```
+
+```{r, eval=FALSE}
+# Convert BEDmatrix to R matrix
+X_HO <- t(as.matrix(HO)) # transpose to get loci x individuals format
+X_HO <- alstructure:::impute_mean(X_HO) # impute missing values in genotype matrix
+
+# Estimate IAFs
+K <- 25 # choose the number of admixed populations
+HO_Pi_hat <- alstructure::estimate_F(X_HO, d = K)$F_hat # estimated IAFs
+
+# Run sLD
+HO_diff_chr_ids <- readRDS("./rdata/HO_rdata/diff_chr/HO_diff_chr_ids.rds") # load pair indices
+J_ind <- ncol(X_HO) 
+HO_Pi_hat[HO_Pi_hat < 1/(2*J_ind)] <- 1/(2*J_ind) # truncate IAF estimates 
+HO_Pi_hat[HO_Pi_hat > 1 - 1/(2*J_ind)] <- 1 - 1/(2*J_ind)
+HO_test_stats_K25 <- sLD(X_HO, HO_Pi_hat, HO_diff_chr_ids)
+saveRDS(HO_test_stats_K25, file = "./rdata/HO_rdata/diff_chr/HO_K25_diff_chr.rds")
+```
+
+### Code for plotting 
+
+This figure consists of three subfigures, each consisting of three histograms of $p$-values. Since these subfigures have the same formatting as @sec-fig1, we will call the function $\texttt{plot\_triple\_histograms()}$ used previously. 
+
+```{r}
+# K = 1 plots 
+p_vec <- numeric()
+id_vec <- numeric()
+
+obs_ts <- readRDS("./rdata/TGP_rdata/diff_chr/TGP_K1_diff_chr.rds")
+p_k <- compute_p_val(obs_ts)
+p_vec <- c(p_vec, p_k)
+id_vec <- c(id_vec, rep(1, length(p_k)))
+
+obs_ts <- readRDS("./rdata/HGDP_rdata/diff_chr/HGDP_K1_diff_chr.rds")
+p_k <- compute_p_val(obs_ts)
+p_vec <- c(p_vec, p_k)
+id_vec <- c(id_vec, rep(2, length(p_k)))
+
+obs_ts <- readRDS("./rdata/HO_rdata/diff_chr/HO_K1_diff_chr.rds")
+p_k <- compute_p_val(obs_ts)
+p_vec <- c(p_vec, p_k)
+id_vec <- c(id_vec, rep(3, length(p_k)))
+
+sLD_df_alldata_K1 <- data.frame(id = id_vec, p = p_vec)
+sLD_df_alldata_K1$id <- as.factor(sLD_df_alldata_K1$id)
+
+labels <- c(
+  "1"  = "TGP~(italic(K)==1)",
+  "2"  = "HGDP~(italic(K)==1)",
+  "3" = "HO~(italic(K)==1)"
+)
+
+p1 <- plot_triple_histograms(sLD_df_alldata_K1, labels)
+```
+
+```{r}
+# K chosen by sHWE test 
+p_vec <- numeric()
+id_vec <- numeric()
+
+obs_ts <- readRDS("./rdata/TGP_rdata/diff_chr/TGP_K12_diff_chr.rds")
+p_k <- compute_p_val(obs_ts)
+p_vec <- c(p_vec, p_k)
+id_vec <- c(id_vec, rep(1, length(p_k)))
+
+obs_ts <- readRDS("./rdata/HGDP_rdata/diff_chr/HGDP_K16_diff_chr.rds")
+p_k <- compute_p_val(obs_ts)
+p_vec <- c(p_vec, p_k)
+id_vec <- c(id_vec, rep(2, length(p_k)))
+
+obs_ts <- readRDS("./rdata/HO_rdata/diff_chr/HO_K25_diff_chr.rds")
+p_k <- compute_p_val(obs_ts)
+p_vec <- c(p_vec, p_k)
+id_vec <- c(id_vec, rep(3, length(p_k)))
+
+sLD_df_alldata_K_sHWE <- data.frame(id = id_vec, p = p_vec)
+sLD_df_alldata_K_sHWE$id <- as.factor(sLD_df_alldata_K_sHWE$id)
+
+labels <- c(
+  "1"  = "TGP~(italic(K)==12)",
+  "2"  = "HGDP~(italic(K)==16)",
+  "3" = "HO~(italic(K)==25)"
+)
+
+p2 <- plot_triple_histograms(sLD_df_alldata_K_sHWE, labels)
+```
+
+```{r}
+# K to ensure uniform p-values
+p_vec <- numeric()
+id_vec <- numeric()
+
+obs_ts <- readRDS("./rdata/TGP_rdata/diff_chr/TGP_K19_diff_chr.rds")
+p_k <- compute_p_val(obs_ts)
+p_vec <- c(p_vec, p_k)
+id_vec <- c(id_vec, rep(1, length(p_k)))
+
+obs_ts <- readRDS("./rdata/HGDP_rdata/diff_chr/HGDP_K40_diff_chr.rds")
+p_k <- compute_p_val(obs_ts)
+p_vec <- c(p_vec, p_k)
+id_vec <- c(id_vec, rep(2, length(p_k)))
+
+obs_ts <- readRDS("./rdata/HO_rdata/diff_chr/HO_K50_diff_chr.rds")
+p_k <- compute_p_val(obs_ts)
+p_vec <- c(p_vec, p_k)
+id_vec <- c(id_vec, rep(3, length(p_k)))
+
+sLD_df_alldata_K_uniform <- data.frame(id = id_vec, p = p_vec)
+sLD_df_alldata_K_uniform$id <- as.factor(sLD_df_alldata_K_uniform$id)
+
+labels <- c(
+  "1"  = "TGP~(italic(K)==19)",
+  "2"  = "HGDP~(italic(K)==40)",
+  "3" = "HO~(italic(K)==50)"
+)
+
+p3 <- plot_triple_histograms(sLD_df_alldata_K_uniform, labels)
+```
+
+```{r}
+# Combine subfigures into single figure
+p <- p1 / p2 / p3 + 
+  plot_annotation(tag_levels = "A") & 
+  theme(plot.tag = element_text(face = "bold", size = 14),
+        plot.margin = margin(t = 5, r = 1, b = 5, l = 1, unit = "pt"))
+
+p
+ggsave(filename="./figures/figure5.png", p, width = 6.5, height = 6, dpi = 1200)
+```
+
+## Figure 6
+
+This figure plots sLD test $p$-values for pairs of loci residing on the same chromosome. We will use the same SNP annotations (BioMart) from the preceding figures to determine which chromosome each SNP falls on. The two helper functions below are used to facilitate the sampling of locus pairs within a given chromosome. The first function, $\texttt{sample\_snp\_pairs\_by\_distance()}$, samples pairs of SNPs on a given chromosome within a physical distance (in base pairs) window $[\texttt{lower\_bound}, \texttt{upper\_bound}]$. The second function, $\texttt{sample\_window\_across\_chr()}$, applies $\texttt{sample\_snp\_pairs\_by\_distance()}$ to each of the 22 autosomes. 
+
+We would then carry out the sLD test using the function $\texttt{sLD()}$, inputting the corresponding pairs of indices as argument (see above for sample implementations).
+
+```{r, eval=FALSE}
+# Helper functions for sampling locus pairs on a given chromosome
+sample_snp_pairs_by_distance <- function(positions, rsids, lower_bound, upper_bound, 
+                                         n_pairs = 1000, max_trials = 5e3) {
+  n <- length(positions)
+  pairs <- matrix(NA_integer_, nrow = n_pairs, ncol = 2)
+  bp_distance <- numeric(n_pairs)
+  count <- 0
+  trials <- 0
+
+  while (count < n_pairs && trials < max_trials) {
+    i <- sample.int(n - 1, 1)
+    pos_i <- positions[i]
+    rel_dist <- positions[(i+1):n] - pos_i
+    valid_j_rel <- which(rel_dist >= lower_bound & rel_dist <= upper_bound)
+
+    if (length(valid_j_rel) > 0) {
+      if (length(valid_j_rel) == 1) {
+        j <- i + valid_j_rel
+      } else {
+        j <- i + sample(valid_j_rel, 1)
+      }
+      count <- count + 1
+      pairs[count, ] <- c(rsids[i], rsids[j])
+      bp_distance[count] <- abs(pos_i - positions[j])
+    }
+    trials <- trials + 1
+  }
+
+  if (count < n_pairs) {
+    pairs <- pairs[1:count, , drop = FALSE]
+    warning(sprintf("Only %d pairs found (target was %d)", count, n_pairs))
+  }
+
+  return(list(pairs = pairs, bp_distance = bp_distance))
+}
+
+sample_window_across_chr <- function(snp_df, lower_bound, upper_bound, 
+                                    n_pairs_per_chr = 1000, 
+                                    max_trials = n_pairs_per_chr*10) {
+  
+  window_ids <- matrix(nrow = 22*n_pairs_per_chr, ncol=2)
+  window_distance <- numeric(22*n_pairs_per_chr)
+  
+  for (i in 1:22) {
+    chr_df <- snp_df[snp_df$chr_name == i,]
+    chr_df <- chr_df[order(chr_df$chrom_start, decreasing=F),]
+    sampleid <- sample_snp_pairs_by_distance(chr_df$chrom_start, chr_df$refsnp_id,
+                                             n_pairs = n_pairs_per_chr,
+                                             max_trials = max_trials,
+                                             lower_bound = lower_bound, 
+                                             upper_bound = upper_bound)
+    window_distance[((i-1)*n_pairs_per_chr+1):(i*n_pairs_per_chr)] <- sampleid$bp_distance
+    window_ids[((i-1)*n_pairs_per_chr+1):(i*n_pairs_per_chr), ] <- sampleid$pairs
+  }
+  
+  return(list(pairs = window_ids, bp_distance = window_distance))
+}
+```
+
+### Sample locus pairs for the TGP
+
+We will first sample locus pairs for the TGP. Recall that $\texttt{snp\_info\_TGP}$ contains annotations for most of the SNPs in the TGP dataset. We sample locus pairs belonging to four base pair distance windows: $0$ to $5$ kbp, $5$ to $50$ kbp, $50$ to $500$ kbp, and $500$ kbp to $5$ Mbp. We store (base pair) distances between pairs of loci and locus pair indices within the directory $\texttt{./rdata/TGP\_rdata/same\_chr}$. 
+
+```{r, eval=FALSE}
+# 0-5 kbp window 
+set.seed(23)
+window0_5k <- sample_window_across_chr(snp_info_TGP, 0, 5e3, n_pairs_per_chr=5000)
+window0_5k_ids <- match_rsid_index(window0_5k$pairs, rsid_TGP)
+range(window0_5k$bp_distance)
+saveRDS(window0_5k_ids, file="./rdata/TGP_rdata/same_chr/window_0_5k_tgp.rds")
+saveRDS(window0_5k$bp_distance, file="./rdata/TGP_rdata/same_chr/distances_0_5k_tgp.rds")
+```
+
+```{r, eval=FALSE}
+# 5-50 kbp window
+set.seed(23)
+window5_50k <- sample_window_across_chr(snp_info_TGP, 5e3, 5e4, n_pairs_per_chr=5000)
+window5_50k_ids <- match_rsid_index(window5_50k$pairs, rsid_TGP)
+range(window5_50k$bp_distance)
+saveRDS(window5_50k_ids, file="./rdata/TGP_rdata/same_chr/window_5_50k_tgp.rds")
+saveRDS(window5_50k$bp_distance, file="./rdata/TGP_rdata/same_chr/distances_5_50k_tgp.rds")
+```
+
+```{r, eval=FALSE}
+# 50-500 kbp
+set.seed(23)
+window50_500k <- sample_window_across_chr(snp_info_TGP, 5e4, 5e5, n_pairs_per_chr=5000)
+window50_500k_ids <- match_rsid_index(window50_500k$pairs, rsid_TGP)
+range(window50_500k$bp_distance)
+saveRDS(window50_500k_ids, file="./rdata/TGP_rdata/same_chr/window_50_500k_tgp.rds")
+saveRDS(window50_500k$bp_distance, file="./rdata/TGP_rdata/same_chr/distances_50_500k_tgp.rds")
+```
+
+```{r, eval=FALSE}
+# 500 kbp - 5 Mbp
+set.seed(23)
+window500k_5m <- sample_window_across_chr(snp_info_TGP, 5e5, 5e6, n_pairs_per_chr=5000)
+window500k_5m_ids <- match_rsid_index(window500k_5m$pairs, rsid_TGP)
+range(window500k_5m$bp_distance)
+saveRDS(window500k_5m_ids, file="./rdata/TGP_rdata/same_chr/window_500k_5m_tgp.rds")
+saveRDS(window500k_5m$bp_distance, file="./rdata/TGP_rdata/same_chr/distances_500k_5m_tgp.rds")
+```
+
+### Sample locus pairs for the HGDP
+
+We will now sample locus pairs for the HGDP. The process closely mirrors that of the TGP. 
+
+```{r, eval=FALSE}
+# 0-5 kbp window 
+set.seed(23)
+window0_5k <- sample_window_across_chr(snp_info_HGDP, 0, 5e3, n_pairs_per_chr=5000)
+window0_5k_ids <- match_rsid_index(window0_5k$pairs, rsid_HGDP)
+range(window0_5k$bp_distance)
+saveRDS(window0_5k_ids, file="./rdata/HGDP_rdata/same_chr/window_0_5k_hgdp.rds")
+saveRDS(window0_5k$bp_distance, file="./rdata/HGDP_rdata/same_chr/distances_0_5k_hgdp.rds")
+```
+
+```{r, eval=FALSE}
+# 5-50 kbp window
+set.seed(23)
+window5_50k <- sample_window_across_chr(snp_info_HGDP, 5e3, 5e4, n_pairs_per_chr=5000)
+window5_50k_ids <- match_rsid_index(window5_50k$pairs, rsid_HGDP)
+range(window5_50k$bp_distance)
+saveRDS(window5_50k_ids, file="./rdata/HGDP_rdata/same_chr/window_5_50k_hgdp.rds")
+saveRDS(window5_50k$bp_distance, file="./rdata/HGDP_rdata/same_chr/distances_5_50k_hgdp.rds")
+```
+
+```{r, eval=FALSE}
+# 50-500 kbp
+set.seed(23)
+window50_500k <- sample_window_across_chr(snp_info_HGDP, 5e4, 5e5, n_pairs_per_chr=5000)
+window50_500k_ids <- match_rsid_index(window50_500k$pairs, rsid_HGDP)
+range(window50_500k$bp_distance)
+saveRDS(window50_500k_ids, file="./rdata/HGDP_rdata/same_chr/window_50_500k_hgdp.rds")
+saveRDS(window50_500k$bp_distance, file="./rdata/HGDP_rdata/same_chr/distances_50_500k_hgdp.rds")
+```
+
+```{r, eval=FALSE}
+# 500 kbp - 5 Mbp
+set.seed(23)
+window500k_5m <- sample_window_across_chr(snp_info_HGDP, 5e5, 5e6, n_pairs_per_chr=5000)
+window500k_5m_ids <- match_rsid_index(window500k_5m$pairs, rsid_HGDP)
+range(window500k_5m$bp_distance)
+saveRDS(window500k_5m_ids, file="./rdata/HGDP_rdata/same_chr/window_500k_5m_hgdp.rds")
+saveRDS(window500k_5m$bp_distance, file="./rdata/HGDP_rdata/same_chr/distances_500k_5m_hgdp.rds")
+```
+
+### Sample locus pairs for the HO study
+
+Similar to before, now for the HO dataset. 
+
+```{r, eval=FALSE}
+# 0-5 kbp window 
+set.seed(23)
+window0_5k <- sample_window_across_chr(snp_info_HO, 0, 5e3, n_pairs_per_chr=5000)
+window0_5k_ids <- match_rsid_index(window0_5k$pairs, rsid_HO)
+range(window0_5k$bp_distance)
+saveRDS(window0_5k_ids, file="./rdata/HO_rdata/same_chr/window_0_5k_ho.rds")
+saveRDS(window0_5k$bp_distance, file="./rdata/HO_rdata/same_chr/distances_0_5k_ho.rds")
+```
+
+```{r, eval=FALSE}
+# 5-50 kbp window
+set.seed(23)
+window5_50k <- sample_window_across_chr(snp_info_HO, 5e3, 5e4, n_pairs_per_chr=5000)
+window5_50k_ids <- match_rsid_index(window5_50k$pairs, rsid_HO)
+range(window5_50k$bp_distance)
+saveRDS(window5_50k_ids, file="./rdata/HO_rdata/same_chr/window_5_50k_ho.rds")
+saveRDS(window5_50k$bp_distance, file="./rdata/HO_rdata/same_chr/distances_5_50k_ho.rds")
+```
+
+```{r, eval=FALSE}
+# 50-500 kbp
+set.seed(23)
+window50_500k <- sample_window_across_chr(snp_info_HO, 5e4, 5e5, n_pairs_per_chr=5000)
+window50_500k_ids <- match_rsid_index(window50_500k$pairs, rsid_HO)
+range(window50_500k$bp_distance)
+saveRDS(window50_500k_ids, file="./rdata/HO_rdata/same_chr/window_50_500k_ho.rds")
+saveRDS(window50_500k$bp_distance, file="./rdata/HO_rdata/same_chr/distances_50_500k_ho.rds")
+```
+
+```{r, eval=FALSE}
+# 500 kbp - 5 Mbp
+set.seed(23)
+window500k_5m <- sample_window_across_chr(snp_info_HO, 5e5, 5e6, n_pairs_per_chr=5000)
+window500k_5m_ids <- match_rsid_index(window500k_5m$pairs, rsid_HO)
+range(window500k_5m$bp_distance)
+saveRDS(window500k_5m_ids, file="./rdata/HO_rdata/same_chr/window_500k_5m_ho.rds")
+saveRDS(window500k_5m$bp_distance, file="./rdata/HO_rdata/same_chr/distances_500k_5m_ho.rds")
+```
+
+### Code for plotting 
+
+We introduce a helper function $\texttt{make\_binned\_df()}$ to generate a dataframe for plotting. We group $-\log_{10}(p$-values) into bins based on the physical distance between loci (within a given pair), then calculate the mean within these bins. 
+
+```{r}
+make_binned_df <- function(p_vec, distances) {
+  
+  x <- distances
+  y <- -log10(p_vec)
+  y <- pmin(y, 16) # truncate p-values 
+  df <- data.frame(x = x, y = y)
+  
+  # Create bins and compute mean per bin 
+  bin_width <- 0.25
+  df_binned <- df %>%
+    mutate(bin = cut(x, breaks = seq(0, 7, by = bin_width), include.lowest = TRUE)) %>%
+    group_by(bin) %>%
+    summarize(
+      mean_x = mean(x, na.rm = TRUE),
+      mean_y = mean(y, na.rm = TRUE, trim=0.05),
+      var_x = var(x, na.rm = TRUE),
+      var_y = var(y, na.rm = TRUE),
+      .groups = "drop"
+    )
+    
+  return(df_binned)
+}
+```
+
+```{r}
+# K = 1 for TGP
+ts_0_5 <- readRDS("./rdata/TGP_rdata/same_chr/TGP_K1_window_0_5k.rds")
+ts_5_50 <- readRDS("./rdata/TGP_rdata/same_chr/TGP_K1_window_5_50k.rds")
+ts_50_500 <- readRDS("./rdata/TGP_rdata/same_chr/TGP_K1_window_50_500k.rds")
+ts_500_5m <- readRDS("./rdata/TGP_rdata/same_chr/TGP_K1_window_500k_5m.rds")
+
+distance_0_5 <- readRDS(file="./rdata/TGP_rdata/same_chr/distances_0_5k_tgp.rds")
+distance_5_50 <- readRDS(file="./rdata/TGP_rdata/same_chr/distances_5_50k_tgp.rds")
+distance_50_500 <- readRDS(file="./rdata/TGP_rdata/same_chr/distances_50_500k_tgp.rds")
+distance_500_5m <- readRDS(file="./rdata/TGP_rdata/same_chr/distances_500k_5m_tgp.rds")
+
+ts_vec <- c(ts_0_5, ts_5_50, ts_50_500, ts_500_5m)
+combined_p <- compute_p_val(ts_vec)
+dist <- log10(c(distance_0_5, distance_5_50, distance_50_500, distance_500_5m)) # transform base pair distances into log10 scale 
+df_binned_TGP_K1 <- make_binned_df(combined_p, dist)
+```
+
+```{r}
+# K = 1 for HGDP
+ts_0_5 <- readRDS("./rdata/HGDP_rdata/same_chr/HGDP_K1_window_0_5k.rds")
+ts_5_50 <- readRDS("./rdata/HGDP_rdata/same_chr/HGDP_K1_window_5_50k.rds")
+ts_50_500 <- readRDS("./rdata/HGDP_rdata/same_chr/HGDP_K1_window_50_500k.rds")
+ts_500_5m <- readRDS("./rdata/HGDP_rdata/same_chr/HGDP_K1_window_500k_5m.rds")
+
+distance_0_5 <- readRDS(file="./rdata/HGDP_rdata/same_chr/distances_0_5k_HGDP.rds")
+distance_5_50 <- readRDS(file="./rdata/HGDP_rdata/same_chr/distances_5_50k_HGDP.rds")
+distance_50_500 <- readRDS(file="./rdata/HGDP_rdata/same_chr/distances_50_500k_HGDP.rds")
+distance_500_5m <- readRDS(file="./rdata/HGDP_rdata/same_chr/distances_500k_5m_HGDP.rds")
+
+ts_vec <- c(ts_0_5, ts_5_50, ts_50_500, ts_500_5m)
+combined_p <- compute_p_val(ts_vec)
+dist <- log10(c(distance_0_5, distance_5_50, distance_50_500, distance_500_5m))
+df_binned_HGDP_K1 <- make_binned_df(combined_p, dist)
+```
+
+```{r}
+# K = 1 for HO
+ts_0_5 <- readRDS("./rdata/HO_rdata/same_chr/HO_K1_window_0_5k.rds")
+ts_5_50 <- readRDS("./rdata/HO_rdata/same_chr/HO_K1_window_5_50k.rds")
+ts_50_500 <- readRDS("./rdata/HO_rdata/same_chr/HO_K1_window_50_500k.rds")
+ts_500_5m <- readRDS("./rdata/HO_rdata/same_chr/HO_K1_window_500k_5m.rds")
+
+distance_0_5 <- readRDS(file="./rdata/HO_rdata/same_chr/distances_0_5k_HO.rds")
+distance_5_50 <- readRDS(file="./rdata/HO_rdata/same_chr/distances_5_50k_HO.rds")
+distance_50_500 <- readRDS(file="./rdata/HO_rdata/same_chr/distances_50_500k_HO.rds")
+distance_500_5m <- readRDS(file="./rdata/HO_rdata/same_chr/distances_500k_5m_HO.rds")
+
+ts_vec <- c(ts_0_5, ts_5_50, ts_50_500, ts_500_5m)
+combined_p <- compute_p_val(ts_vec)
+dist <- log10(c(distance_0_5, distance_5_50, distance_50_500, distance_500_5m))
+df_binned_HO_K1 <- make_binned_df(combined_p, dist)
+```
+
+```{r}
+# K = 12 for TGP
+ts_0_5 <- readRDS("./rdata/TGP_rdata/same_chr/TGP_K12_window_0_5k.rds")
+ts_5_50 <- readRDS("./rdata/TGP_rdata/same_chr/TGP_K12_window_5_50k.rds")
+ts_50_500 <- readRDS("./rdata/TGP_rdata/same_chr/TGP_K12_window_50_500k.rds")
+ts_500_5m <- readRDS("./rdata/TGP_rdata/same_chr/TGP_K12_window_500k_5m.rds")
+
+distance_0_5 <- readRDS(file="./rdata/TGP_rdata/same_chr/distances_0_5k_tgp.rds")
+distance_5_50 <- readRDS(file="./rdata/TGP_rdata/same_chr/distances_5_50k_tgp.rds")
+distance_50_500 <- readRDS(file="./rdata/TGP_rdata/same_chr/distances_50_500k_tgp.rds")
+distance_500_5m <- readRDS(file="./rdata/TGP_rdata/same_chr/distances_500k_5m_tgp.rds")
+
+ts_vec <- c(ts_0_5, ts_5_50, ts_50_500, ts_500_5m)
+combined_p <- compute_p_val(ts_vec)
+dist <- log10(c(distance_0_5, distance_5_50, distance_50_500, distance_500_5m))
+df_binned_TGP_K12 <- make_binned_df(combined_p, dist)
+```
+
+```{r}
+# K = 16 for HGDP
+ts_0_5 <- readRDS("./rdata/HGDP_rdata/same_chr/HGDP_K16_window_0_5k.rds")
+ts_5_50 <- readRDS("./rdata/HGDP_rdata/same_chr/HGDP_K16_window_5_50k.rds")
+ts_50_500 <- readRDS("./rdata/HGDP_rdata/same_chr/HGDP_K16_window_50_500k.rds")
+ts_500_5m <- readRDS("./rdata/HGDP_rdata/same_chr/HGDP_K16_window_500k_5m.rds")
+
+distance_0_5 <- readRDS(file="./rdata/HGDP_rdata/same_chr/distances_0_5k_HGDP.rds")
+distance_5_50 <- readRDS(file="./rdata/HGDP_rdata/same_chr/distances_5_50k_HGDP.rds")
+distance_50_500 <- readRDS(file="./rdata/HGDP_rdata/same_chr/distances_50_500k_HGDP.rds")
+distance_500_5m <- readRDS(file="./rdata/HGDP_rdata/same_chr/distances_500k_5m_HGDP.rds")
+
+ts_vec <- c(ts_0_5, ts_5_50, ts_50_500, ts_500_5m)
+combined_p <- compute_p_val(ts_vec)
+dist <- log10(c(distance_0_5, distance_5_50, distance_50_500, distance_500_5m))
+df_binned_HGDP_K16 <- make_binned_df(combined_p, dist)
+```
+
+```{r}
+# K = 25 for HO
+ts_0_5 <- readRDS("./rdata/HO_rdata/same_chr/HO_K25_window_0_5k.rds")
+ts_5_50 <- readRDS("./rdata/HO_rdata/same_chr/HO_K25_window_5_50k.rds")
+ts_50_500 <- readRDS("./rdata/HO_rdata/same_chr/HO_K25_window_50_500k.rds")
+ts_500_5m <- readRDS("./rdata/HO_rdata/same_chr/HO_K25_window_500k_5m.rds")
+
+distance_0_5 <- readRDS(file="./rdata/HO_rdata/same_chr/distances_0_5k_HO.rds")
+distance_5_50 <- readRDS(file="./rdata/HO_rdata/same_chr/distances_5_50k_HO.rds")
+distance_50_500 <- readRDS(file="./rdata/HO_rdata/same_chr/distances_50_500k_HO.rds")
+distance_500_5m <- readRDS(file="./rdata/HO_rdata/same_chr/distances_500k_5m_HO.rds")
+
+ts_vec <- c(ts_0_5, ts_5_50, ts_50_500, ts_500_5m)
+combined_p <- compute_p_val(ts_vec)
+dist <- log10(c(distance_0_5, distance_5_50, distance_50_500, distance_500_5m))
+df_binned_HO_K25 <- make_binned_df(combined_p, dist)
+```
+
+```{r}
+combined_df <- rbind(df_binned_TGP_K12, df_binned_HGDP_K16, df_binned_HO_K25,
+                    df_binned_TGP_K1, df_binned_HGDP_K1, df_binned_HO_K1)
+df_label <- c(rep("TGP", 27), rep("HGDP", 27), rep("HO", 27),
+             rep("TGP", 27), rep("HGDP", 27), rep("HO", 27))
+test_label <- c(rep("sLD",81), rep("Traditional",81))
+combined_df <- cbind(combined_df, df_label, test_label)
+combined_df$df_label <- factor(combined_df$df_label, levels=c("TGP", "HGDP", "HO"))
+combined_df$test_label <- factor(combined_df$test_label, levels=c("sLD", "Traditional"))
+
+p <- ggplot(combined_df, aes(x = mean_x, y = mean_y,
+                             color = test_label, linetype = test_label)) +
+  geom_line(linewidth = 0.7) + coord_cartesian(xlim = c(2.6,6.4), ylim=c(0,16)) + 
+  facet_wrap(~ df_label, nrow=1) +
+  labs(
+    x = "Distance (bp)",
+    y = TeX(r"(-$log_{10}$(\textit{p}-value))"),
+    color = "Method",
+    linetype = "Method"
+  ) +  
+  theme_bw(base_family = "sans") + 
+  theme(strip.background = element_blank(),
+        strip.text = element_text(face = "plain", size = 8),
+        panel.border = element_rect(color = "black", fill = NA, linewidth = 0.5),
+        panel.grid.minor = element_blank(),
+        axis.text = element_text(size = 6),
+        axis.title.x = element_text(size = 8),
+        text = element_text(size = 8),
+        aspect.ratio = 0.8,
+        legend.position = "bottom",
+        legend.title = element_text(size = 8),
+        legend.text = element_text(size = 7)
+        ) + 
+  scale_x_continuous(breaks = c(3, 4, 5, 6),
+                     labels = TeX(c("$10^3$", "$10^4$", "$10^5$", "$10^6$")),
+                     expand = c(0, 0)
+                     ) + 
+  scale_color_manual(breaks = c("Traditional", "sLD"),
+                     values = c("sLD" = "#009E73", "Traditional" = "#E69F00")
+                     ) + 
+  scale_linetype_manual(breaks = c("Traditional", "sLD"),
+                        values = c("sLD" = "dotdash", "Traditional" = "solid")
+                        ) +
+  guides(linetype = guide_legend(override.aes = list(linewidth = 0.5))) + 
+  geom_hline(yintercept=-log10(0.5), linetype=2, col="black")
+
+p
+ggsave("./figures/figure6.png", plot = p, width = 6, height = 3, dpi = 1200)
+```
+
+## Figure 7
+
+### Obtain locus pairs spanning the HLA region
+
+We first identify SNPs mapping to the HLA region, which resides on Chromosome 6; we obtained coordinates for this region from [@kulski2022]. We restrict our analyses to an approximately 1 Mb window in this region, and halve the number of SNPs for computational feasibility and plotting. 
+
+Like before, we can carry out the sLD test once we identify a set of locus pairs. Here, these pair indices are contained within $\texttt{HLA\_TGP\_indices.rds}$. 
+
+```{r, eval=FALSE}
+hla_mapping <- snp_info_TGP %>%
+  filter(chr_name == 6, 
+         chrom_start >= 32400000, 
+         chrom_start <= 33400000) %>%
+  arrange(chrom_start)
+
+thin_factor <- 2
+hla_rsid_thinned <- hla_mapping$refsnp_id[seq(1, nrow(hla_mapping), by = thin_factor)]
+pairs_matrix <- combn(hla_rsid_thinned, 2)
+TGP_HLA_ids <- match_rsid_index(pairs_matrix, rsid_TGP)
+saveRDS(TGP_HLA_ids, file="./rdata/TGP_rdata/HLA_TGP_indices.rds")
+saveRDS(pairs_matrix, file="./rdata/TGP_rdata/HLA_TGP_coordinates.rds")
+```
+
+### Code for plotting 
+
+```{r, eval=TRUE}
+make_heatmap_df <- function(pairs_df) {
+  
+  plot_df <- pairs_df %>%
+    left_join(snp_info_TGP, by = c("snpa" = "refsnp_id")) %>%
+    rename(pos_a = chrom_start) %>%
+    left_join(snp_info_TGP, by = c("snpb" = "refsnp_id")) %>%
+    rename(pos_b = chrom_start)
+  plot_df_rotated <- plot_df %>%
+    mutate(x_coord = (pos_a + pos_b) / 2, # horizontal center between two SNP
+           y_coord = abs(pos_a - pos_b) / 2) # height represents how far apart they are
+  
+  return(plot_df_rotated)
+}
+```
+
+```{r, eval=TRUE}
+HLA_coords <- readRDS("./rdata/TGP_rdata/HLA_TGP_coordinates.rds")
+ts_K1 <- readRDS("./rdata/TGP_rdata/TGP_K1_HLA.rds")
+pval_K1 <- compute_p_val(ts_K1)
+logp_K1 <- -log10(pval_K1)
+logp_K1 <- pmin(logp_K1, 16)
+pairs_df <- data.frame(snpa = HLA_coords[1, ], snpb = HLA_coords[2, ], 
+                       value = logp_K1)
+plot_df_trad <- make_heatmap_df(pairs_df)
+```
+
+```{r, eval=TRUE}
+ts_K12 <- readRDS("./rdata/TGP_rdata/TGP_K12_HLA.rds")
+pval_K12 <- compute_p_val(ts_K12)
+logp_K12 <- -log10(pval_K12)
+logp_K12 <- pmin(logp_K12, 16)
+pairs_df <- data.frame(snpa = HLA_coords[1, ], snpb = HLA_coords[2, ], 
+                       value = logp_K12)
+plot_df_sLD <- make_heatmap_df(pairs_df)
+```
+
+```{r, eval=TRUE}
+pairs_df <- data.frame(snpa = HLA_coords[1, ], snpb = HLA_coords[2, ], 
+                       value = logp_K1 - logp_K12)
+plot_df_diff <- make_heatmap_df(pairs_df)
+
+plot_df_combined <- bind_rows(
+  mutate(plot_df_trad, test_type = "Traditional"),
+  mutate(plot_df_sLD, test_type = "sLD"),
+  mutate(plot_df_diff, test_type = "Traditional - sLD")
+)
+
+# Set order of subplots
+plot_df_combined$test_type <- factor(plot_df_combined$test_type, 
+                                     levels = c("Traditional", 
+                                                "sLD", 
+                                                "Traditional - sLD")
+                                     )
+```
+
+```{r, eval=TRUE}
+# Filter SNPs to remove excess white space
+keep <- plot_df_combined$pos_a >= 32600000 & plot_df_combined$pos_b >= 32600000
+plot_df_combined_filtered <- plot_df_combined[keep, ]
+# Convert to Mb scale
+plot_df_combined_filtered$x_coord <- plot_df_combined_filtered$x_coord / 1e6
+plot_df_combined_filtered$y_coord <- plot_df_combined_filtered$y_coord / 1e6
+
+p <- ggplot(plot_df_combined_filtered, 
+                       aes(x = x_coord, y = y_coord, color = value)) +
+  geom_point(shape = 18, size = 0.5, alpha = 0.6) + 
+  scale_color_gradient2(low = "skyblue",
+                        mid = "white",
+                        high = "#FF746C", 
+                        limits = c(-16, 16),
+                        midpoint=0,
+                        na.value = "white"
+                        ) +
+  facet_wrap(~test_type, ncol = 1, labeller = label_parsed) +
+  theme_bw() +
+  theme(strip.background = element_blank(),
+        text = element_text(family = "sans", size = 10),
+        plot.title = element_text(hjust = 0.5, size = 10),
+        panel.spacing = unit(0.5, "lines"),
+        axis.title.x = element_text(size=7),
+        axis.text.x = element_text(size = 5),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        panel.grid = element_blank(),
+        aspect.ratio = 0.8, 
+        strip.text = element_text(size = 7, 
+                                  margin = ggplot2::margin(t = 2, r = 2, b = 2, l = 2)),
+        legend.title = element_text(size = 7),
+        legend.text = element_text(size = 5)) +
+  labs(x = "Genomic position on chr6 (Mb)",
+       y = "",
+       color = TeX(r"(-log$_{10}$(\textit{p}-value))")
+       )
+
+p
+ggsave("./figures/figure7.png", plot = p, width = 6, height = 8, dpi = 1200)
+```
+
+# Appendix Figures
+
+## Figure 8 {#sec-fig8}
+
+In this figure, we plot histograms of $p$-values corresponding to interchromosomal locus pairs for a range of admixed population counts $K$. The workflow here is essentially the same as for @sec-fig1 (and similar figures), except that we employ a wider range of $K$. We see that $p$-values progressively become uniform as more of the structure in the population is captured via $K$. We plot results for the TGP here.
+
+```{r, eval=TRUE}
+p_vec <- c()
+id_vec <- c()
+
+for (i in c(1:24)) {
+  obs_ts <- sprintf("./rdata/TGP_rdata/diff_chr/TGP_K%s_diff_chr.rds", i)
+  obs_ts <- readRDS(obs_ts)
+  p_k <- compute_p_val(obs_ts)
+  p_vec <- c(p_vec, p_k)
+  id_vec <- c(id_vec, rep(i, length(p_k)))
+}
+
+sLD_df_TGP <- data.frame(id = id_vec, p = p_vec)
+sLD_df_TGP$id <- as.factor(sLD_df_TGP$id)
+```
+
+```{r, eval=TRUE}
+label_id <- as.factor(c(1:24))
+labels <- setNames(sprintf("italic(K)==%d", c(1:24)), label_id)
+
+p <- ggplot(sLD_df_TGP, aes(x = p, y = after_stat(density))) + 
+  geom_histogram(binwidth = 0.05, boundary = 0,
+                 fill = "#CCD3DD", col = "black",
+                 linewidth = 0.2) + 
+  geom_hline(yintercept = 1, linetype = "dashed", color = "black", linewidth = 0.3) +
+  facet_wrap(~id, 
+             labeller = as_labeller(labels, default = label_parsed), 
+             scales = "free_y", 
+             ncol = 4) + 
+  theme_bw(base_family = "sans") + 
+  theme(text = element_text(size = 10),
+        plot.title = element_text(hjust = 0.5, size = 8),
+        strip.background = element_blank(),
+        strip.text = element_text(size = 8, face = "plain", 
+                                  margin = margin(t = 2, r = 0, b = 2, l = 0)),
+        panel.border = element_rect(color = "black", fill = NA, linewidth = 0.5),
+        panel.spacing = unit(0.5, "lines"),
+        panel.grid.minor = element_blank(),
+        axis.title.x = element_text(size = 8),
+        axis.title.y = element_text(size = 8),
+        axis.text.x = element_text(size = 4),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        aspect.ratio = 0.7
+        ) + 
+  labs(x = TeX(r"(\textit{p}-value)"),
+       y = "Density",
+       title=TeX(r"(TGP \textit{p}-values versus \textit{K})")
+       )
+
+p
+ggsave("./figures/figure8.png", plot = p, width = 6, height = 8, dpi = 1200)
+```
+
+## Figure 9 {#sec-fig9}
+
+This figure closely resembles @sec-fig8, only we analyze the HGDP instead of the TGP. 
+
+```{r, eval=TRUE}
+p_vec <- c()
+id_vec <- c()
+
+for (i in c(1:48)) {
+  obs_ts <- sprintf("./rdata/HGDP_rdata/diff_chr/HGDP_K%s_diff_chr.rds", i)
+  obs_ts <- readRDS(obs_ts)
+  p_k <- compute_p_val(obs_ts)
+  p_vec <- c(p_vec, p_k)
+  id_vec <- c(id_vec, rep(i, length(p_k)))
+}
+
+sLD_df_HGDP <- data.frame(id = id_vec, p = p_vec)
+sLD_df_HGDP$id <- as.factor(sLD_df_HGDP$id)
+```
+
+```{r, eval=TRUE}
+label_id <- as.factor(c(1:48))
+labels <- setNames(sprintf("italic(K)==%d", c(1:48)), label_id)
+
+p <- ggplot(sLD_df_HGDP, aes(x = p, y = after_stat(density))) + 
+  geom_histogram(binwidth = 0.05, boundary = 0,
+                 fill = "#CCD3DD", col = "black",
+                 linewidth = 0.2) + 
+  geom_hline(yintercept = 1, linetype = "dashed", color = "black", linewidth = 0.3) +
+  facet_wrap(~id, 
+             labeller = as_labeller(labels, default = label_parsed), 
+             scales = "free_y", 
+             ncol = 6) + 
+  theme_bw(base_family = "sans") + 
+  theme(text = element_text(size = 10),
+        plot.title = element_text(hjust = 0.5, size = 8),
+        strip.background = element_blank(),
+        strip.text = element_text(size = 8, face = "plain", 
+                                  margin = margin(t = 2, r = 0, b = 2, l = 0)),
+        panel.border = element_rect(color = "black", fill = NA, linewidth = 0.5),
+        panel.spacing = unit(0.5, "lines"),
+        panel.grid.minor = element_blank(),
+        axis.title.x = element_text(size = 8),
+        axis.title.y = element_text(size = 8),
+        axis.text.x = element_text(size = 4),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        aspect.ratio = 0.7
+        ) + 
+  labs(x = TeX(r"(\textit{p}-value)"),
+       y = "Density",
+       title=TeX(r"(HGDP \textit{p}-values versus \textit{K})")
+       )
+
+p
+ggsave("./figures/figure9.png", plot = p, width = 6, height = 8, dpi = 1200)
+```
+
+## Figure 10 {#sec-fig10}
+
+This figure is similar to the previous two; we plot histograms for the HO project now. 
+
+```{r, eval=TRUE}
+p_vec <- c()
+id_vec <- c()
+
+for (i in c(5:58)) {
+  obs_ts <- sprintf("./rdata/HO_rdata/diff_chr/HO_K%s_diff_chr.rds", i)
+  obs_ts <- readRDS(obs_ts)
+  p_k <- compute_p_val(obs_ts)
+  p_vec <- c(p_vec, p_k)
+  id_vec <- c(id_vec, rep(i, length(p_k)))
+}
+
+sLD_df_HO <- data.frame(id = id_vec, p = p_vec)
+sLD_df_HO$id <- as.factor(sLD_df_HO$id)
+```
+
+```{r, eval=TRUE}
+label_id <- as.factor(c(5:58))
+labels <- setNames(sprintf("italic(K)==%d", c(5:58)), label_id)
+
+p <- ggplot(sLD_df_HO, aes(x = p, y = after_stat(density))) + 
+  geom_histogram(binwidth = 0.05, boundary = 0,
+                 fill = "#CCD3DD", col = "black",
+                 linewidth = 0.2) + 
+  geom_hline(yintercept = 1, linetype = "dashed", color = "black", linewidth = 0.3) +
+  facet_wrap(~id, 
+             labeller = as_labeller(labels, default = label_parsed), 
+             scales = "free_y", 
+             ncol = 6) + 
+  theme_bw(base_family = "sans") + 
+  theme(text = element_text(size = 10),
+        plot.title = element_text(hjust = 0.5, size = 8),
+        strip.background = element_blank(),
+        strip.text = element_text(size = 8, face = "plain", 
+                                  margin = margin(t = 2, r = 0, b = 2, l = 0)),
+        panel.border = element_rect(color = "black", fill = NA, linewidth = 0.5),
+        panel.spacing = unit(0.5, "lines"),
+        panel.grid.minor = element_blank(),
+        axis.title.x = element_text(size = 8),
+        axis.title.y = element_text(size = 8),
+        axis.text.x = element_text(size = 3),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        aspect.ratio = 0.7
+        ) + 
+  labs(x = TeX(r"(\textit{p}-value)"),
+       y = "Density",
+       title=TeX(r"(HO \textit{p}-values versus \textit{K})")
+       )
+
+p
+ggsave("./figures/figure10.png", plot = p, width = 6, height = 8, dpi = 1200)
+```
+
+## Figure 11 {#sec-fig11}
+
+We evaluate the fit of the $\text{Normal}(0,1)$ theoretical null distribution for the TGP by comparing it to an empirical null distribution (generated via the parametric bootstrap approach detailed in [@hao2019]). From our simulated genotypes, we carry out a total of $2 \times 10^6$ hypothesis tests, resulting in $2 \times 10^6$ null test statistics. In order to see whether the empirical null distribution is approximately $\text{Normal}(0,1)$ distributed, we compute two-sided $p$-values from our empirical test statistics using the $\text{Normal}(0,1)$ cumulative distribution function (CDF). If the empirical null distribution is roughly $\text{Normal}(0,1)$, we would expect to see a  $\text{Uniform}(0,1)$ distribution of $p$-values. We compute the two-sided $p$-value $2(1-\Phi(\lvert T^{(J)}_{ab}(\hat{\mathbf{\Pi}}^0_{ab})\rvert))$ for each test statistic $T^{(J)}_{ab}(\hat{\mathbf{\Pi}}^0_{ab})$, where $\Phi(\cdot)$ denotes the $\text{Normal}(0,1)$ CDF. To better visualize tail behavior, we chose to plot a quantile-quantile plot of $p$-values against theoretical uniform quantiles on a logarithmic axis, rather than comparing test statistic directly against $\text{Normal}(0,1)$ quantiles. We perform this analysis for a wide range of admixed population counts $K$. 
+
+### Simulate empirical null 
+
+We include a sample implementation (using a population model with $K=3$ admixed populations) for simulating an empirical null distribution of test statistics. Note that we performed this analysis, like several of the previous analyses, on the ARGO cluster. We store null test statistics in the directory $\texttt{./rdata/TGP\_rdata/null\_stats}$.
+
+```{r, eval=FALSE}
+# Convert BEDmatrix to R matrix 
+X_TGP <- t(as.matrix(TGP)) # transpose to get loci x individuals format
+X_TGP <- alstructure:::impute_mean(X_TGP) # impute missing values in genotype matrix
+
+# Estimate IAFs
+K <- 3 # choose the number of admixed populations
+TGP_Pi_hat <- alstructure::estimate_F(X_TGP, d = K)$F_hat # estimated IAFs
+
+# Draw null genotypes, re-estimate IAFs
+X_0_TGP <- draw_genotypes_admix(TGP_Pi_hat)
+Pi_hat_0_TGP <- alstructure::estimate_F(X_0_TGP, d = K)$F_hat
+
+# Run sLD
+TGP_diff_chr_ids <- readRDS("./rdata/TGP_rdata/diff_chr/TGP_diff_chr_ids.rds") 
+J_ind <- ncol(X_0_TGP) 
+Pi_hat_0_TGP[Pi_hat_0_TGP < 1/(2*J_ind)] <- 1/(2*J_ind) # truncate IAF estimates 
+Pi_hat_0_TGP[Pi_hat_0_TGP > 1 - 1/(2*J_ind)] <- 1 - 1/(2*J_ind)
+TGP_test_stats_null_K3 <- sLD(X_0_TGP, Pi_hat_0_TGP, TGP_diff_chr_ids)
+saveRDS(TGP_test_stats_null_K3, 
+        file = "./rdata/TGP_rdata/null_stats/TGP_K3_null_stats.rds")
+```
+
+### Code for plotting
+
+Because we analyzed a large number of $p$-values, we chose to sample a subset of them for each quantile-quantile plot to avoid a prohibitively large file size for the final figure. We restrict this downsampling to larger $p$-values, keeping all $p$-values $< 0.01$ to preserve the tail behavior of our empirical distribution. We include a function below, $\texttt{downsample\_indices()}$, that carries out this downsampling procedure; the argument $\texttt{sample\_size}$ denotes the target number of $p$-values to keep. Note that we apply this downsampling to both the observed $p$-values as well as the paired theoretical $\text{Uniform}(0,1)$ quantiles. 
+
+```{r, eval=TRUE}
+downsample_indices <- function(test_stats, sample_size=2e4) {
+  
+  # Sort test statistics in decreasing order (i.e., increasing p-values)
+  n_total <- length(test_stats)
+  abs_ts_sorted <- sort(abs(test_stats), decreasing = TRUE)
+  p_sorted <- compute_p_val(abs_ts_sorted)
+  p_theo_all <- ppoints(length(test_stats))
+  
+  # Keep all small p-values
+  tail_indices <- which(p_sorted < 0.01) 
+  if (length(tail_indices) > 0) {
+    tail_limit <- max(tail_indices)
+    tail_idx <- 1:tail_limit
+  } else {
+    tail_limit <- 0
+    tail_idx <- integer(0)
+  }
+  
+  # Downsample the "bulk" region containing larger p-values
+  if (tail_limit < n_total) {
+    bulk_start <- tail_limit + 1
+    n_bulk <- n_total - bulk_start + 1
+    if (n_bulk > sample_size) {
+      bulk_idx <- unique(round(seq(bulk_start, n_total, length.out = sample_size)))
+    } else {
+      bulk_idx <- bulk_start:n_total
+    }
+  } else {
+    bulk_idx <- integer(0)
+  }
+  
+  keep_idx <- c(tail_idx, bulk_idx)
+  return(list(obs = p_sorted[keep_idx], 
+              theo = p_theo_all[keep_idx]))
+}
+```
+
+```{r, eval=TRUE}
+p_vec <- c()
+theo_vec <- c()
+id_vec <- c()
+
+for (i in 2:25) {
+  file_path <- sprintf(
+    "./rdata/TGP_rdata/null_stats/TGP_K%s_null_stats.rds", i
+  )
+  obs_ts <- readRDS(file_path)
+  downsampled_p <- downsample_indices(obs_ts)
+  p_vec <- c(p_vec, downsampled_p$obs)
+  theo_vec <- c(theo_vec, downsampled_p$theo)
+  id_vec <- c(id_vec, rep(i, length(downsampled_p$theo)))
+}
+
+sLD_df_TGP_null <- data.frame(id = id_vec, sample = -log10(p_vec), theo = -log10(theo_vec))
+sLD_df_TGP_null$id <- as.factor(sLD_df_TGP_null$id)
+```
+
+```{r, eval=TRUE}
+label_id <- as.factor(c(2:25))
+labels <- setNames(sprintf("italic(K)==%d", c(2:25)), label_id)
+
+p <- ggplot(sLD_df_TGP_null, aes(x=theo, y=sample)) + 
+  geom_point(size=0.01, alpha=0.4, colour="#789FCC") +
+  geom_abline(slope = 1, intercept = 0, linetype="dashed", linewidth=0.2) + 
+  facet_wrap(~id, labeller=as_labeller(labels,
+             default=label_parsed), ncol=4) + theme_bw() +
+  theme(text=element_text(family="sans", size=10),
+        plot.title = element_text(hjust = 0.5, size=8),
+        panel.spacing = unit(0.5,"lines"),
+        axis.text.x = element_text(size = 5),
+        axis.text.y = element_text(size = 5),
+        axis.title.x = element_text(size = 6),
+        axis.title.y = element_text(size = 6),
+        aspect.ratio = 0.7,
+        strip.text = element_text(size = 6, margin = 
+                                    margin(t = 1, r = 1, b = 1, l = 1)),
+        strip.background = element_blank()) + 
+  labs(x=TeX(r"(Theoretical -log$_{10}$(Uniform(0,1) quantiles))"), 
+       y=TeX(r"(Observed -log$_{10}$(\textit{p}-values))"),
+       title=TeX(r"(TGP null \textit{p}-values)")) 
+
+p
+ggsave("./figures/figure11.png", plot = p, width = 6, height = 8, dpi = 1200)
+```
+
+## Figure 12 {#sec-fig12}
+
+This figure is similar to @sec-fig11, only we analyze the HGDP. 
+
+```{r, eval=TRUE}
+p_vec <- c()
+theo_vec <- c()
+id_vec <- c()
+
+for (i in 2:49) {
+  file_path <- sprintf(
+    "./rdata/HGDP_rdata/null_stats/HGDP_K%s_null_stats.rds", i
+  )
+  obs_ts <- readRDS(file_path)
+  downsampled_p <- downsample_indices(obs_ts)
+  p_vec <- c(p_vec, downsampled_p$obs)
+  theo_vec <- c(theo_vec, downsampled_p$theo)
+  id_vec <- c(id_vec, rep(i, length(downsampled_p$theo)))
+}
+
+sLD_df_HGDP_null <- data.frame(id = id_vec, sample = -log10(p_vec), theo = -log10(theo_vec))
+sLD_df_HGDP_null$id <- as.factor(sLD_df_HGDP_null$id)
+```
+
+```{r, eval=TRUE}
+label_id <- as.factor(c(2:49))
+labels <- setNames(sprintf("italic(K)==%d", c(2:49)), label_id)
+
+p <- ggplot(sLD_df_HGDP_null, aes(x=theo, y=sample)) + 
+  geom_point(size=0.01, alpha=0.4, colour="#789FCC") +
+  geom_abline(slope = 1, intercept = 0, linetype="dashed", linewidth=0.2) + 
+  facet_wrap(~id, labeller=as_labeller(labels,
+             default=label_parsed), ncol=6) + theme_bw() +
+  theme(text=element_text(family="sans", size=10),
+        plot.title = element_text(hjust = 0.5, size=8),
+        panel.spacing = unit(0.5,"lines"),
+        axis.text.x = element_text(size = 5),
+        axis.text.y = element_text(size = 5),
+        axis.title.x = element_text(size = 6),
+        axis.title.y = element_text(size = 6),
+        aspect.ratio = 0.7,
+        strip.text = element_text(size = 6, margin = 
+                                    margin(t = 1, r = 1, b = 1, l = 1)),
+        strip.background = element_blank()) + 
+  labs(x=TeX(r"(Theoretical -log$_{10}$(Uniform(0,1) quantiles))"), 
+       y=TeX(r"(Observed -log$_{10}$(\textit{p}-values))"),
+       title=TeX(r"(HGDP null \textit{p}-values)")) 
+
+p
+ggsave("./figures/figure12.png", plot = p, width = 6, height = 8, dpi = 1200)
+```
+
+## Figure 13 {#sec-fig13}
+
+Similar to the previous two figures, but analyzing the HO project. 
+
+```{r, eval=TRUE}
+p_vec <- c()
+theo_vec <- c()
+id_vec <- c()
+
+for (i in 5:58) {
+  file_path <- sprintf(
+    "./rdata/HO_rdata/null_stats/HO_K%s_null_stats.rds", i
+  )
+  obs_ts <- readRDS(file_path)
+  downsampled_p <- downsample_indices(obs_ts)
+  p_vec <- c(p_vec, downsampled_p$obs)
+  theo_vec <- c(theo_vec, downsampled_p$theo)
+  id_vec <- c(id_vec, rep(i, length(downsampled_p$theo)))
+}
+
+sLD_df_HO_null <- data.frame(id = id_vec, sample = -log10(p_vec), theo = -log10(theo_vec))
+sLD_df_HO_null$id <- as.factor(sLD_df_HO_null$id)
+```
+
+```{r, eval=TRUE}
+label_id <- as.factor(c(5:58))
+labels <- setNames(sprintf("italic(K)==%d", c(5:58)), label_id)
+
+p <- ggplot(sLD_df_HO_null, aes(x=theo, y=sample)) + 
+  geom_point(size=0.01, alpha=0.4, colour="#789FCC") +
+  geom_abline(slope = 1, intercept = 0, linetype="dashed", linewidth=0.2) + 
+  facet_wrap(~id, labeller=as_labeller(labels,
+             default=label_parsed), ncol=6) + theme_bw() +
+  theme(text=element_text(family="sans", size=10),
+        plot.title = element_text(hjust = 0.5, size=8),
+        panel.spacing = unit(0.5,"lines"),
+        axis.text.x = element_text(size = 5),
+        axis.text.y = element_text(size = 5),
+        axis.title.x = element_text(size = 6),
+        axis.title.y = element_text(size = 6),
+        aspect.ratio = 0.7,
+        strip.text = element_text(size = 6, margin = 
+                                    margin(t = 1, r = 1, b = 1, l = 1)),
+        strip.background = element_blank()) + 
+  labs(x=TeX(r"(Theoretical -log$_{10}$(Uniform(0,1) quantiles))"), 
+       y=TeX(r"(Observed -log$_{10}$(\textit{p}-values))"),
+       title=TeX(r"(HO null \textit{p}-values)")) 
+
+p
+ggsave("./figures/figure13.png", plot = p, width = 6, height = 8, dpi = 1200)
+```
+
+```{r}
+sessionInfo()
+```
+
+# References {.unnumbered}
+
+::: {#refs}
+
+:::

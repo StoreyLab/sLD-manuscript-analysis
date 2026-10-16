@@ -51,3 +51,6 @@ po/*~
 
 # RStudio Connect folder
 rsconnect/
+
+# Automatically generated files when knitting 
+sLD_reproducible_analysis_files
