@@ -12,7 +12,7 @@ bibliography: ./bibliography.bib
 
 # Introduction
 
-This document contains code and supporting information accompanying the manuscript "Testing for linkage disequilibrium in structured populations." We organize the document by figure in order of appearance in the main text. 
+This document contains code and supporting information accompanying the manuscript "A test for linkage disequilibrium in structured populations." We organize the document by figure in order of appearance in the main text. 
 
 Some time-consuming chunks below are set not to run by default. Instead, we ran these code chunks on the ARGO SLURM cluster (managed by the Lewis-Sigler Institute for Integrative Genomics at Princeton University) and provide intermediate $\texttt{.rds}$ files in the $\texttt{rdata}$ directory to be loaded inside of plotting chunks. This directory contains sub-directories corresponding to each of the human studies we analyze in this study ($\texttt{TGP\_rdata}$, $\texttt{HGDP\_rdata}$, $\texttt{HO\_rdata}$), as well as a sub-directory for simulation studies ($\texttt{power\_sim}$). The $\texttt{figures}$ directory in turn contains the output figures. 
 
@@ -442,9 +442,13 @@ ggsave(filename="./figures/figure3.png", p, width = 7, height = 6, dpi = 1200)
 
 ## Figure 4
 
-We evaluate the statistical power of the sLD test, assessing whether it has the ability to detect true instances of structural LD. As such, we implement the forward-generating probability model for genotype pairs in structural LD outlined in the main text. We first generate IAFs for $J = 800$ individuals at $I = 200000$ loci under an admixture model with $K=4$ admixed populations. Our simulation parameters and distributions closely mirror those used for [Figure 3](#sec-fig3), only we have a larger number of loci here. 
+We evaluate the statistical power of the sLD test, assessing whether it has the ability to detect true instances of structural LD. As such, we implement the forward-generating probability model for genotype pairs in structural LD outlined in the manuscript (specifically in the Appendices). We first generate IAFs for $J = 800$ individuals at $I = 200000$ loci under an admixture model with $K=4$ admixed populations. Our simulation parameters and distributions closely mirror those used for [Figure 3](#sec-fig3), only we have a larger number of loci here. 
 
-From these IAFs, we then draw genotypes -- some in structural LD, and others not in structural LD. Genotype pairs *not* in structural LD are essentially jointly independent binomial draws in accordance with the coancestry model. For genotype pairs in structural LD, we must tune the value of their individual-specific LD coefficient $\delta_{ab,j}$. Note that the possible values of $\delta_{ab,j}$ are constrained, as detailed in the manuscript, by $D_{\min}(\pi_{aj}, \pi_{bj})$ and $D_{\max}(\pi_{aj}, \pi_{bj})$ -- the minimum and maximum possible values of the LD coefficient given two allele frequencies $\pi_{aj}$ and $\pi_{bj}$. These constraints ensure that haplotype frequencies under our framework are non-negative values summing up to one. Thus, given $\pi_{aj}$ and $\pi_{bj}$, and assuming positive LD, we first compute $D_{\max}(\pi_{aj}, \pi_{bj})$ and then set $\delta_{ab,j} = D' \times D_{\max}(\pi_{aj}, \pi_{bj})$, where $D' \in [0,1]$ is some chosen proportion of the maximum possible (positive) LD. In our simulations, we chose a range of $D'$ from $0.2$ to $1$ in increments of $0.1$. We conduct 300 simulation replicates for each value of $D'$. 
+From these IAFs, we then draw genotypes -- some in structural LD, and others not in structural LD. Genotype pairs *not* in structural LD are essentially jointly independent binomial draws in accordance with the coancestry model. For genotype pairs in structural LD, we must tune the value of their individual-specific LD coefficient $\delta_{ab,j}$. Note that the possible values of $\delta_{ab,j}$ are constrained, as detailed in the manuscript, by $D_{\min}(\pi_{aj}, \pi_{bj})$ and $D_{\max}(\pi_{aj}, \pi_{bj})$ -- the minimum and maximum possible values of the LD coefficient given two allele frequencies $\pi_{aj}$ and $\pi_{bj}$. These constraints ensure that haplotype frequencies under our framework are non-negative values summing up to one. Thus, given $\pi_{aj}$ and $\pi_{bj}$, and assuming positive LD, we first compute $D_{\max}(\pi_{aj}, \pi_{bj})$ and then set 
+$$
+\delta_{ab,j} = \min\{\rho_{ab} \sqrt{\pi_{aj}(1-\pi_{aj})\pi_{bj}(1-\pi_{bj})}, D_{\max}(\pi_{aj}, \pi_{bj})\},
+$$
+where $\rho_{ab}$ denotes some (non-negative) target conditional correlation. In our simulations, we chose a range of $\rho_{ab}$ from $0.1$ to $0.5$ in increments of $0.05$. Note that for a given value of $\rho_{ab}$ in this analysis, all non-null pairs have that value of $\rho_{ab}$ set as the target conditional correlation so that the signal of structural LD is consistent within a given simulation replicate. We conduct 300 simulation replicates for each value of $\rho_{ab}$. 
 
 ### Draw IAFs
 
@@ -459,7 +463,7 @@ inbr_subpops <- c(0.1, 0.2, 0.3, 0.4)
 admix_proportions <- bnpsd::admix_prop_1d_linear(J_ind, K_subpops, sigma = 1)
 
 # Draw IAFs
-p_anc <- bnpsd::draw_p_anc(I_loci, p_min = 0.05, p_max = 0.5)
+p_anc <- bnpsd::draw_p_anc(I_loci, p_min = 0.05, p_max = 0.95)
 p_subpops <- bnpsd::draw_p_subpops(p_anc, inbr_subpops)
 p_ind <- bnpsd::make_p_ind_admix(p_subpops, admix_proportions)
 p_ind[p_ind < 1/(2*J_ind)] <- 1/(2*J_ind) # truncate small/large IAFs
@@ -548,7 +552,7 @@ run_single_simulation <- function(s, p_ind, rho, q_threshold = 0.1,
 }
 ```
 
-We include a representative example of running a set of simulation replicates for a given value of $D'$ (0.5 in this case). We ran these simulations on the ARGO cluster to speed up compute time; the directory $\texttt{./rdata/power\_sim}$ contains the output of these simulations. 
+We include a representative example of running a set of simulation replicates for a given value of $\rho$ (0.5 in this case). We ran these simulations on the ARGO cluster to speed up compute time; the directory $\texttt{./rdata/power\_sim}$ contains the output of these simulations. 
 
 ```{r, eval=FALSE}
 set.seed(42)
@@ -1739,8 +1743,8 @@ p <- ggplot(sLD_df_TGP_null, aes(x=theo, y=sample)) +
         strip.text = element_text(size = 6, margin = 
                                     margin(t = 1, r = 1, b = 1, l = 1)),
         strip.background = element_blank()) + 
-  labs(x=TeX(r"(Theoretical -log$_{10}$(Uniform(0,1) quantiles))"), 
-       y=TeX(r"(Observed -log$_{10}$(\textit{p}-values))"),
+  labs(x=TeX(r"(-log$_{10}$(Normal(0,1) \textit{p}-values))"), 
+       y=TeX(r"(-log$_{10}$(Bootstrap \textit{p}-values))"),
        title=TeX(r"(TGP null \textit{p}-values)")) 
 
 p
@@ -1791,8 +1795,8 @@ p <- ggplot(sLD_df_HGDP_null, aes(x=theo, y=sample)) +
         strip.text = element_text(size = 6, margin = 
                                     margin(t = 1, r = 1, b = 1, l = 1)),
         strip.background = element_blank()) + 
-  labs(x=TeX(r"(Theoretical -log$_{10}$(Uniform(0,1) quantiles))"), 
-       y=TeX(r"(Observed -log$_{10}$(\textit{p}-values))"),
+  labs(x=TeX(r"(-log$_{10}$(Normal(0,1) \textit{p}-values))"), 
+       y=TeX(r"(-log$_{10}$(Bootstrap \textit{p}-values))"),
        title=TeX(r"(HGDP null \textit{p}-values)")) 
 
 p
@@ -1843,8 +1847,8 @@ p <- ggplot(sLD_df_HO_null, aes(x=theo, y=sample)) +
         strip.text = element_text(size = 6, margin = 
                                     margin(t = 1, r = 1, b = 1, l = 1)),
         strip.background = element_blank()) + 
-  labs(x=TeX(r"(Theoretical -log$_{10}$(Uniform(0,1) quantiles))"), 
-       y=TeX(r"(Observed -log$_{10}$(\textit{p}-values))"),
+  labs(x=TeX(r"(-log$_{10}$(Normal(0,1) \textit{p}-values))"), 
+       y=TeX(r"(-log$_{10}$(Bootstrap \textit{p}-values))"),
        title=TeX(r"(HO null \textit{p}-values)")) 
 
 p

@@ -3,10 +3,10 @@
 #' This function performs the sLD test for a given pair of SNPs at distinct loci a and b,
 #' returning the sLD test statistic. 
 #'
-#' @param X_a Genotypes at locus a. 
-#' @param X_b Genotypes at locus b.
-#' @param pi_a IAFs at locus a.
-#' @param pi_b IAFs at locus b. 
+#' @param X_a Length-\eqn{J} vector of genotypes at locus a. 
+#' @param X_b Length-\eqn{J} vector of genotypes at locus b.
+#' @param pi_a Length-\eqn{J} vector of IAFs at locus a.
+#' @param pi_b Length-\eqn{J} vector of IAFs at locus b. 
 #'
 #' @return sLD test statistic computed for SNPs at loci a and b.
 #'     

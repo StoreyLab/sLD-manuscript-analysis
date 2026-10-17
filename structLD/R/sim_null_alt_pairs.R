@@ -25,7 +25,7 @@
 #' 
 #' @export
 
-sim_null_alt_pairs <- function(Pi, alt_ids, LD_sign, D_prime) {
+sim_null_alt_pairs <- function(Pi, alt_ids, rho) {
   # Check arguments
   if (!is.matrix(Pi)) {
     stop("'Pi' must be a numeric matrix.")
@@ -40,6 +40,9 @@ sim_null_alt_pairs <- function(Pi, alt_ids, LD_sign, D_prime) {
   if (max(alt_ids) > I_loci || min(alt_ids) < 1) {
     stop("Indices in 'alt_ids' exceed the number of rows in 'Pi'.")
   }
+  if (!is.numeric(rho) || length(rho) != 1 || rho < -1 || rho > 1) {
+    stop("'rho' must be a single numeric value between -1 and 1.")
+  }
   
   n_pairs <- nrow(alt_ids)
   X <- matrix(nrow = I_loci, ncol = J_ind)
@@ -51,7 +54,7 @@ sim_null_alt_pairs <- function(Pi, alt_ids, LD_sign, D_prime) {
     locus_b <- alt_ids[i, 2]
     pi_a <- Pi[locus_a, ]
     pi_b <- Pi[locus_b, ]
-    X[c(locus_a, locus_b), ] <- sim_structural_LD(pi_a, pi_b, LD_sign, D_prime)
+    X[c(locus_a, locus_b), ] <- sim_structural_LD(pi_a, pi_b, rho)
   }
   
   # Draw genotypes at remaining loci (not in structural LD)

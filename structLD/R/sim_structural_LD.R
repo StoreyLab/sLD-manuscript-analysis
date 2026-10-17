@@ -1,31 +1,34 @@
 #' sim_structural_LD
 #'
-#' This function draws pairs of genotypes \eqn{X_a}, \eqn{X_b} in structural LD 
-#' according to a multinomial distribution parameterized by individual-specific 
-#' haplotype frequencies.
+#' This function draws pairs of genotypes \eqn{X_a}, \eqn{X_b} in structural LD
+#' according to a multinomial distribution parameterized by individual-specific
+#' haplotype frequencies (IHFs) with a targeted residual correlation \eqn{\rho}.
+#' The residual correlation is applied between the sample minor alleles at loci \eqn{a}
+#' and \eqn{b}, and the resulting genotypes are re=coded back to match the original 
+#' orientation of \code{pi_a} and \code{pi_b}.
 #'
-#' @param pi_a Length-\eqn{n} vector of individual-specific allele frequencies (IAF) 
-#'      at locus \eqn{a}. 
-#' @param pi_b Length-\eqn{n} vector of IAFs at locus \eqn{b}. 
-#' @param LD_sign Direction of LD (1 for positive LD, -1 for negative LD).
-#' @param D_prime A value between 0 and 1 denoting the proportion of the maximum or
-#'      minimum possible LD coefficient.
+#' @param pi_a Length-\eqn{J} vector of individual-specific allele frequencies (IAF)
+#'      at locus \eqn{a}.
+#' @param pi_b Length-\eqn{J} vector of IAFs at locus \eqn{b}.
+#' @param rho A single numeric value in \eqn{[-1, 1]} denoting the residual correlation
+#'      between the minor alleles of loci \eqn{a} and \eqn{b}. Positive values indicate
+#'      positive LD between minor alleles; negative values indicate negative LD.
 #'
-#' @return Genotypes at loci \eqn{a} and \eqn{b} for \eqn{n} individuals. 
-#'     
-#' @note pi_a and pi_b must have the same length \eqn{n}. LD_sign must either equal 1 or -1. 
-#'      D_prime must be in the interval \eqn{[0,1]}. 
+#' @return A \eqn{2 \times J} matrix where the first row contains genotypes for locus \eqn{a}
+#'      and the second row contains genotypes for locus \eqn{b} across all \eqn{J} individuals,
+#'      aligned with the input reference orientation of \code{pi_a} and \code{pi_b}.
+#'
+#' @note \code{pi_a} and \code{pi_b} must have the same length \eqn{J}. \code{rho} must
+#'      be in \eqn{[-1, 1]}. 
 #'
 #' @examples
-#' pi_a <- c(rep(0.25, 50), rep(0.3, 50))
-#' pi_b <- c(rep(0.3, 50), rep(0.45, 50))
-#' LD_sign <- 1
-#' D_prime <- 0.4 
-#' X_ab <- sim_structural_LD(pi_a, pi_b, LD_sign, D_prime)
-#' 
+#' pi_a <- c(rep(0.75, 50), rep(0.8, 50)) 
+#' pi_b <- c(rep(0.2, 50), rep(0.15, 50)) 
+#' rho <- 0.2
+#' X_ab <- sim_structural_LD(pi_a, pi_b, rho = rho)
+#'
 #' @export
-
-sim_structural_LD <- function(pi_a, pi_b, LD_sign, D_prime) {
+sim_structural_LD <- function(pi_a, pi_b, rho) {
   # Check arguments
   if (!is.numeric(pi_a) || !is.numeric(pi_b)) {
     stop("'pi_a' and 'pi_b' must be numeric vectors.")
@@ -36,35 +39,50 @@ sim_structural_LD <- function(pi_a, pi_b, LD_sign, D_prime) {
   if (any(pi_a < 0 | pi_a > 1) || any(pi_b < 0 | pi_b > 1)) {
     stop("Allele frequencies must lie between 0 and 1.")
   }
-  if (!LD_sign %in% c(1, -1)) {
-    stop("'LD_sign' must equal either 1 or -1.")
-  }
-  if (!is.numeric(D_prime) || length(D_prime) != 1 || D_prime < 0 || D_prime > 1) {
-    stop("'D_prime' must be a single numeric value between 0 and 1.")
+  if (!is.numeric(rho) || length(rho) != 1 || rho < -1 || rho > 1) {
+    stop("'rho' must be a single numeric value between -1 and 1.")
   }
   
-  # Compute the individual-specific LD coefficient for each individual 
-  if (LD_sign == 1) {
-    max_D <- pmin(pi_a * (1 - pi_b), (1 - pi_a) * pi_b)
-    LD_offset <- D_prime * max_D 
-  } else {
-    min_D <- pmin(pi_a * pi_b, (1 - pi_a) * (1 - pi_b))
-    LD_offset <- -D_prime * min_D
-  }
+  # Check whether each locus tracks the major allele; if so, flip to minor allele
+  flip_a <- mean(pi_a) > 0.5
+  flip_b <- mean(pi_b) > 0.5
   
-  # Compute individual-specific haplotype frequencies
-  pi_ab <- pi_a*pi_b + LD_offset
-  pi_aB <- pi_a*(1 - pi_b) - LD_offset
-  pi_Ab <- (1 - pi_a)*pi_b - LD_offset
-  pi_AB <- (1 - pi_a)*(1 - pi_b) + LD_offset
-  haplo_freqs <- cbind(pi_ab, pi_aB, pi_Ab, pi_AB)
+  p_a_eff <- if (flip_a) 1 - pi_a else pi_a
+  p_b_eff <- if (flip_b) 1 - pi_b else pi_b
   
-  # Draw haplotypes and compute genotypes 
+  # Compute individual-specific LD param
+  sd_prod <- sqrt(p_a_eff * (1 - p_a_eff) * p_b_eff * (1 - p_b_eff))
+  D_target <- rho * sd_prod
+  
+  # Compute theoretical bounds on LD param
+  D_lower <- pmax(-p_a_eff * p_b_eff, -(1 - p_a_eff) * (1 - p_b_eff))
+  D_upper <- pmin(p_a_eff * (1 - p_b_eff), (1 - p_a_eff) * p_b_eff)
+  
+  # Truncate LD param if necessary
+  eps <- 1e-12
+  LD_offset <- pmin(pmax(D_target, D_lower + eps), D_upper - eps)
+  
+  # Compute haplotypes
+  h_11 <- pmax(0, p_a_eff * p_b_eff + LD_offset)
+  h_10 <- pmax(0, p_a_eff * (1 - p_b_eff) - LD_offset)
+  h_01 <- pmax(0, (1 - p_a_eff) * p_b_eff - LD_offset)
+  h_00 <- pmax(0, (1 - p_a_eff) * (1 - p_b_eff) + LD_offset)
+  prob_sums <- h_11 + h_10 + h_01 + h_00
+  haplo_freqs <- cbind(h_11 / prob_sums,
+                       h_10 / prob_sums,
+                       h_01 / prob_sums,
+                       h_00 / prob_sums)
+  
+  # Draw haplotypes and genotypes
   n_ind <- length(pi_a)
   haplo <- t(sapply(1:n_ind, function(i) rmultinom(1, size = 2, prob = haplo_freqs[i, ])))
-  X_a <- haplo[, 1] + haplo[, 2]
-  X_b <- haplo[, 1] + haplo[, 3]
-  X_ab <- rbind(X_a, X_b)
+  X_a_eff <- haplo[, 1] + haplo[, 2]
+  X_b_eff <- haplo[, 1] + haplo[, 3]
   
+  # Recode genotypes back to the original input orientation
+  X_a <- if (flip_a) 2 - X_a_eff else X_a_eff
+  X_b <- if (flip_b) 2 - X_b_eff else X_b_eff
+  
+  X_ab <- rbind(X_a, X_b)
   return(X_ab)
 }
