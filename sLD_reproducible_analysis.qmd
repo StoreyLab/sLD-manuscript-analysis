@@ -1743,8 +1743,8 @@ p <- ggplot(sLD_df_TGP_null, aes(x=theo, y=sample)) +
         strip.text = element_text(size = 6, margin = 
                                     margin(t = 1, r = 1, b = 1, l = 1)),
         strip.background = element_blank()) + 
-  labs(x=TeX(r"(-log$_{10}$(Normal(0,1) \textit{p}-values))"), 
-       y=TeX(r"(-log$_{10}$(Bootstrap \textit{p}-values))"),
+  labs(x=TeX(r"(Normal(0,1) -log$_{10}$(\textit{p}-values))"), 
+       y=TeX(r"(Bootstrap -log$_{10}$(\textit{p}-values))"),
        title=TeX(r"(TGP null \textit{p}-values)")) 
 
 p
@@ -1795,8 +1795,8 @@ p <- ggplot(sLD_df_HGDP_null, aes(x=theo, y=sample)) +
         strip.text = element_text(size = 6, margin = 
                                     margin(t = 1, r = 1, b = 1, l = 1)),
         strip.background = element_blank()) + 
-  labs(x=TeX(r"(-log$_{10}$(Normal(0,1) \textit{p}-values))"), 
-       y=TeX(r"(-log$_{10}$(Bootstrap \textit{p}-values))"),
+  labs(x=TeX(r"(Normal(0,1) -log$_{10}$(\textit{p}-values))"), 
+       y=TeX(r"(Bootstrap -log$_{10}$(\textit{p}-values))"),
        title=TeX(r"(HGDP null \textit{p}-values)")) 
 
 p
@@ -1847,8 +1847,8 @@ p <- ggplot(sLD_df_HO_null, aes(x=theo, y=sample)) +
         strip.text = element_text(size = 6, margin = 
                                     margin(t = 1, r = 1, b = 1, l = 1)),
         strip.background = element_blank()) + 
-  labs(x=TeX(r"(-log$_{10}$(Normal(0,1) \textit{p}-values))"), 
-       y=TeX(r"(-log$_{10}$(Bootstrap \textit{p}-values))"),
+  labs(x=TeX(r"(Normal(0,1) -log$_{10}$(\textit{p}-values))"), 
+       y=TeX(r"(Bootstrap -log$_{10}$(\textit{p}-values))"),
        title=TeX(r"(HO null \textit{p}-values)")) 
 
 p
