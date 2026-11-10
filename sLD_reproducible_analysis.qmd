@@ -627,7 +627,7 @@ for (i in rho_vec) {
 ```
 
 ```{r, eval=TRUE}
-power_analysis_df <- data.frame(index=rep(seq(0.1,0.5,by=0.05), 6),
+power_analysis_df <- data.frame(index=rep(seq(0.1, 0.5, by = 0.05), 6),
                                 value=c(FDR_vec_theor, FDR_vec_imp, FDR_vec_trad, 
                                        power_vec_theor, power_vec_imp, power_vec_trad),
                                 metric = rep(c("FDR", "FDR", "FDR", 
@@ -1285,20 +1285,21 @@ df_label <- c(rep("TGP", 27), rep("HGDP", 27), rep("HO", 27),
              rep("TGP", 27), rep("HGDP", 27), rep("HO", 27))
 test_label <- c(rep("sLD",81), rep("Traditional",81))
 combined_df <- cbind(combined_df, df_label, test_label)
-combined_df$df_label <- factor(combined_df$df_label, levels=c("TGP", "HGDP", "HO"))
-combined_df$test_label <- factor(combined_df$test_label, levels=c("sLD", "Traditional"))
+combined_df$df_label <- factor(combined_df$df_label, levels = c("TGP", "HGDP", "HO"))
+combined_df$test_label <- factor(combined_df$test_label, levels = c("sLD", "Traditional"))
 
-p <- ggplot(combined_df, aes(x = mean_x, y = mean_y,
-                             color = test_label, linetype = test_label)) +
-  geom_line(linewidth = 0.7) + coord_cartesian(xlim = c(2.6,6.4), ylim=c(0,16)) + 
-  facet_wrap(~ df_label, nrow=1) +
-  labs(
-    x = "Distance (bp)",
-    y = TeX(r"(-$log_{10}$(\textit{p}-value))"),
-    color = "Method",
-    linetype = "Method"
-  ) +  
-  theme_bw(base_family = "sans") + 
+p <- ggplot(combined_df, aes(x = mean_x, y = mean_y, color = test_label)) +
+  geom_line(data = subset(combined_df, test_label == "sLD"),
+            aes(group = test_label), linewidth = 1.0, alpha = 0.75, linetype = "solid") +
+  geom_line(data = subset(combined_df, test_label == "Traditional"),
+            aes(group = test_label), linewidth = 0.6, linetype = "solid") +
+  coord_cartesian(xlim = c(2.6, 6.4), ylim = c(0, 16)) +  
+  facet_wrap(~ df_label, nrow = 1) +
+  labs(x = "Distance (bp)",
+       y = TeX(r"(-$log_{10}$(\textit{p}-value))"),
+       color = "Method"
+       ) +  
+  theme_bw(base_family = "sans") +  
   theme(strip.background = element_blank(),
         strip.text = element_text(face = "plain", size = 8),
         panel.border = element_rect(color = "black", fill = NA, linewidth = 0.5),
@@ -1310,19 +1311,17 @@ p <- ggplot(combined_df, aes(x = mean_x, y = mean_y,
         legend.position = "bottom",
         legend.title = element_text(size = 8),
         legend.text = element_text(size = 7)
-        ) + 
+        ) +  
   scale_x_continuous(breaks = c(3, 4, 5, 6),
                      labels = TeX(c("$10^3$", "$10^4$", "$10^5$", "$10^6$")),
                      expand = c(0, 0)
-                     ) + 
+                     ) +  
   scale_color_manual(breaks = c("Traditional", "sLD"),
                      values = c("sLD" = "#009E73", "Traditional" = "#E69F00")
-                     ) + 
-  scale_linetype_manual(breaks = c("Traditional", "sLD"),
-                        values = c("sLD" = "dotdash", "Traditional" = "solid")
-                        ) +
-  guides(linetype = guide_legend(override.aes = list(linewidth = 0.5))) + 
-  geom_hline(yintercept=-log10(0.5), linetype=2, col="black")
+                     ) +  
+  guides(color = guide_legend(override.aes = list(linewidth = c(0.6, 1.0), 
+                                                  alpha = c(1.0, 0.75)))) +  
+  geom_hline(yintercept = -log10(0.5), linetype = 2, col = "black")
 
 p
 ggsave("./figures/figure6.png", plot = p, width = 6, height = 3, dpi = 1200)
@@ -1347,8 +1346,8 @@ thin_factor <- 2
 hla_rsid_thinned <- hla_mapping$refsnp_id[seq(1, nrow(hla_mapping), by = thin_factor)]
 pairs_matrix <- combn(hla_rsid_thinned, 2)
 TGP_HLA_ids <- match_rsid_index(pairs_matrix, rsid_TGP)
-saveRDS(TGP_HLA_ids, file="./rdata/TGP_rdata/HLA_TGP_indices.rds")
-saveRDS(pairs_matrix, file="./rdata/TGP_rdata/HLA_TGP_coordinates.rds")
+saveRDS(TGP_HLA_ids, file = "./rdata/TGP_rdata/HLA_TGP_indices.rds")
+saveRDS(pairs_matrix, file = "./rdata/TGP_rdata/HLA_TGP_coordinates.rds")
 ```
 
 ### Code for plotting 
