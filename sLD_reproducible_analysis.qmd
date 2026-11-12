@@ -435,7 +435,7 @@ p <- (pA | pB) / (plot_spacer() + pC +
   theme(plot.tag = element_text(face = "bold", size = 14))
 
 p
-ggsave(filename="./figures/figure3.png", p, width = 7, height = 6, dpi = 1200)
+ggsave(filename="./figures/figure3.png", p, width = 7, height = 6, dpi = 600)
 ```
 
 ## Figure 4
@@ -695,7 +695,7 @@ p <- ggplot(power_analysis_df, aes(x = index, y = value, color = method, shape =
   )
 
 p
-ggsave("./figures/figure4.png", plot = p, width = 5, height = 3, dpi = 1200)
+ggsave("./figures/figure4.png", plot = p, width = 5, height = 3, dpi = 600)
 ```
 
 ## Figure 5
@@ -940,7 +940,7 @@ p <- p1 / p2 / p3 +
         plot.margin = margin(t = 5, r = 1, b = 5, l = 1, unit = "pt"))
 
 p
-ggsave(filename="./figures/figure5.png", p, width = 6.5, height = 6, dpi = 1200)
+ggsave(filename="./figures/figure5.png", p, width = 6.5, height = 6, dpi = 600)
 ```
 
 ## Figure 6
@@ -1324,7 +1324,7 @@ p <- ggplot(combined_df, aes(x = mean_x, y = mean_y, color = test_label)) +
   geom_hline(yintercept = -log10(0.5), linetype = 2, col = "black")
 
 p
-ggsave("./figures/figure6.png", plot = p, width = 6, height = 3, dpi = 1200)
+ggsave("./figures/figure6.png", plot = p, width = 6, height = 3, dpi = 600)
 ```
 
 ## Figure 7
@@ -1448,7 +1448,7 @@ p <- ggplot(plot_df_combined_filtered,
        )
 
 p
-ggsave("./figures/figure7.png", plot = p, width = 6, height = 8, dpi = 1200)
+ggsave("./figures/figure7.png", plot = p, width = 4, height = 6, dpi = 400)
 ```
 
 # Appendix Figures
@@ -1508,7 +1508,7 @@ p <- ggplot(sLD_df_TGP, aes(x = p, y = after_stat(density))) +
        )
 
 p
-ggsave("./figures/figure8.png", plot = p, width = 6, height = 8, dpi = 1200)
+ggsave("./figures/figure8.png", plot = p, width = 6, height = 8, dpi = 600)
 ```
 
 ## Figure 9 {#sec-fig9}
@@ -1566,7 +1566,7 @@ p <- ggplot(sLD_df_HGDP, aes(x = p, y = after_stat(density))) +
        )
 
 p
-ggsave("./figures/figure9.png", plot = p, width = 6, height = 8, dpi = 1200)
+ggsave("./figures/figure9.png", plot = p, width = 6, height = 8, dpi = 600)
 ```
 
 ## Figure 10 {#sec-fig10}
@@ -1624,7 +1624,7 @@ p <- ggplot(sLD_df_HO, aes(x = p, y = after_stat(density))) +
        )
 
 p
-ggsave("./figures/figure10.png", plot = p, width = 6, height = 8, dpi = 1200)
+ggsave("./figures/figure10.png", plot = p, width = 6, height = 8, dpi = 600)
 ```
 
 ## Figure 11 {#sec-fig11}
@@ -1745,7 +1745,7 @@ p <- ggplot(sLD_df_TGP_null, aes(x=theo, y=sample)) +
        title=TeX(r"(TGP null \textit{p}-values)")) 
 
 p
-ggsave("./figures/figure11.png", plot = p, width = 6, height = 8, dpi = 1200)
+ggsave("./figures/figure11.png", plot = p, width = 6, height = 8, dpi = 450)
 ```
 
 ## Figure 12 {#sec-fig12}
@@ -1797,7 +1797,7 @@ p <- ggplot(sLD_df_HGDP_null, aes(x=theo, y=sample)) +
        title=TeX(r"(HGDP null \textit{p}-values)")) 
 
 p
-ggsave("./figures/figure12.png", plot = p, width = 6, height = 8, dpi = 1200)
+ggsave("./figures/figure12.png", plot = p, width = 6, height = 8, dpi = 450)
 ```
 
 ## Figure 13 {#sec-fig13}
@@ -1849,7 +1849,7 @@ p <- ggplot(sLD_df_HO_null, aes(x=theo, y=sample)) +
        title=TeX(r"(HO null \textit{p}-values)")) 
 
 p
-ggsave("./figures/figure13.png", plot = p, width = 6, height = 8, dpi = 1200)
+ggsave("./figures/figure13.png", plot = p, width = 6, height = 8, dpi = 450)
 ```
 
 ```{r}
